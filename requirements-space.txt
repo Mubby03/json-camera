@@ -1,0 +1,7 @@
+# Deployed Space only. CPU wheels, and nothing that is not needed to serve.
+torch
+numpy
+pillow
+fastapi
+uvicorn
+python-multipart
