@@ -1,0 +1,340 @@
+/* Tokens ------------------------------------------------------------------
+   Light is the base definition; dark redefines only the tokens, under both the
+   OS media query and an explicit [data-theme] stamp, so neither can strand the
+   other. Series colours are the validated categorical slots 1-4 — light and
+   dark are the same four hues stepped for their own surface, not a flip. */
+
+:root {
+  color-scheme: light;
+
+  --surface-0: #f4f4f1;
+  --surface-1: #fcfcfb;
+  --surface-2: #f0efec;
+  --border:    #dcdbd5;
+  --border-strong: #c3c2b7;
+
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:     #74736e;
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+
+  --good:     #008300;
+  --warning:  #eda100;
+  --critical: #e34948;
+
+  --grid: #e7e6e1;
+
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-0: #121211;
+    --surface-1: #1a1a19;
+    --surface-2: #242423;
+    --border:    #34343200;
+    --border:    #343432;
+    --border-strong: #4a4a47;
+
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #918f86;
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+
+    --good:     #4ba34b;
+    --warning:  #c98500;
+    --critical: #e66767;
+
+    --grid: #2b2b29;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #121211;
+  --surface-1: #1a1a19;
+  --surface-2: #242423;
+  --border:    #343432;
+  --border-strong: #4a4a47;
+
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #918f86;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+
+  --good:     #4ba34b;
+  --warning:  #c98500;
+  --critical: #e66767;
+
+  --grid: #2b2b29;
+}
+
+/* Frame -------------------------------------------------------------------- */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font: 15px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+h1 { font-size: 1.05rem; }
+h2 { font-size: 0.95rem; }
+p  { margin: 0; }
+
+.muted { color: var(--text-muted); font-size: 0.82rem; }
+.mono  { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+code   { font-family: var(--mono); font-size: 0.92em; }
+
+main {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 20px 24px 8px;
+  display: grid;
+  gap: 16px;
+}
+
+footer {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 8px 24px 40px;
+}
+
+/* Top bar ------------------------------------------------------------------ */
+
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 24px;
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.bar-state { display: flex; align-items: center; gap: 12px; }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px 4px 9px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+.pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+/* Status colours ship with a word, never colour alone. */
+.pill-run  { color: var(--good);     border-color: color-mix(in srgb, var(--good) 45%, var(--border)); }
+.pill-run .dot { animation: pulse 1.8s ease-in-out infinite; }
+.pill-done { color: var(--series-1); border-color: color-mix(in srgb, var(--series-1) 45%, var(--border)); }
+.pill-err  { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 45%, var(--border)); }
+.pill-idle { color: var(--text-muted); }
+
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .pill-run .dot { animation: none; } }
+
+/* Panels ------------------------------------------------------------------- */
+
+.panel {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+}
+
+.panel-head { margin-bottom: 12px; display: grid; gap: 3px; }
+.panel-head.row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+
+.two-up { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+@media (max-width: 720px) { .two-up { grid-template-columns: 1fr; } }
+
+/* Progress ----------------------------------------------------------------- */
+
+.progress-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+.progress-head.second { margin-top: 22px; }
+.progress-right { text-align: right; }
+.progress-label { text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.7rem; }
+.progress-value { font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.progress-value .muted { font-size: 0.95rem; font-weight: 400; }
+
+.meter {
+  height: 12px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.meter-thin { height: 8px; border-radius: 4px; }
+
+/* 4px rounded data-end, anchored to the baseline at the left. */
+.meter-fill {
+  height: 100%;
+  width: 0;
+  background: var(--series-1);
+  border-radius: 0 4px 4px 0;
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.meter-fill-2 { background: var(--series-2); transition-duration: 0.35s; }
+@media (prefers-reduced-motion: reduce) { .meter-fill { transition: none; } }
+
+.progress-foot {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 0.78rem;
+}
+
+/* Stat tiles --------------------------------------------------------------- */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: 12px;
+}
+
+.tile {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: grid;
+  gap: 2px;
+}
+.tile-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.tile-value {
+  font-size: 1.7rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.tile-delta { font-size: 0.78rem; font-family: var(--mono); color: var(--text-muted); }
+.tile-delta.up   { color: var(--good); }
+.tile-delta.down { color: var(--critical); }
+
+/* Charts ------------------------------------------------------------------- */
+
+.chart { margin: 0; position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+.axis-line { stroke: var(--border-strong); stroke-width: 1; }
+.grid-line { stroke: var(--grid); stroke-width: 1; }
+.tick-text { fill: var(--text-muted); font-size: 11px; font-family: var(--mono); }
+.axis-title { fill: var(--text-muted); font-size: 11px; }
+
+.series-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.series-dot  { stroke: var(--surface-1); stroke-width: 2; }
+.end-label   { font-size: 11px; font-weight: 600; fill: var(--text-secondary); }
+
+.crosshair { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 3 3; }
+.hit { fill: transparent; }
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 0 0 10px 2px;
+  padding: 0;
+  list-style: none;
+}
+.legend li { display: flex; align-items: center; gap: 7px; font-size: 0.8rem; color: var(--text-secondary); }
+
+.tooltip {
+  position: absolute;
+  pointer-events: none;
+  z-index: 5;
+  min-width: 132px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.14);
+  font-size: 0.8rem;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.tooltip.on { opacity: 1; }
+.tooltip-head { font-weight: 600; margin-bottom: 5px; color: var(--text-primary); }
+.tooltip-row { display: flex; align-items: center; gap: 7px; justify-content: space-between; }
+.tooltip-row span:first-child { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+.tooltip-row b { font-family: var(--mono); font-weight: 600; color: var(--text-primary); }
+
+.empty { padding: 28px 4px; color: var(--text-muted); font-size: 0.86rem; }
+
+/* Table & lists ------------------------------------------------------------ */
+
+button.ghost {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+button.ghost:hover { color: var(--text-primary); border-color: var(--text-muted); }
+
+.table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
+th, td {
+  text-align: right;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+th { color: var(--text-muted); font-weight: 600; text-align: right; position: sticky; top: 0; background: var(--surface-1); }
+th:first-child, td:first-child { text-align: left; }
+tbody tr:hover td { background: var(--surface-2); }
+
+dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 0.84rem; }
+dt { color: var(--text-muted); }
+dd { margin: 0; font-family: var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }

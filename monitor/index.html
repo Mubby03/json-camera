@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>json-camera Training Monitor</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📷</text></svg>">
+</head>
+<body data-palette="#2a78d6,#eb6834,#1baf7a,#eda100">
+
+<header class="bar">
+  <div class="bar-title">
+    <h1>json-camera &middot; learned codec</h1>
+    <p id="subtitle" class="muted">connecting&hellip;</p>
+  </div>
+  <div class="bar-state">
+    <span id="pill" class="pill pill-idle"><span class="dot"></span><span id="pill-text">waiting</span></span>
+    <span id="stamp" class="muted mono"></span>
+  </div>
+</header>
+
+<main>
+
+  <section class="panel" id="progress-panel">
+    <div class="progress-head">
+      <div>
+        <div class="progress-label muted">overall</div>
+        <div class="progress-value"><span id="epoch-done">0</span><span class="muted"> / <span id="epoch-total">0</span> epochs</span></div>
+      </div>
+      <div class="progress-right">
+        <div class="progress-label muted">finishes about</div>
+        <div class="progress-value" id="finish">&mdash;</div>
+      </div>
+    </div>
+    <div class="meter" role="progressbar" aria-labelledby="epoch-done" id="meter-overall-wrap">
+      <div class="meter-fill" id="meter-overall"></div>
+    </div>
+    <div class="progress-foot muted mono">
+      <span id="overall-pct">0%</span>
+      <span id="overall-time"></span>
+    </div>
+
+    <div class="progress-head second">
+      <div>
+        <div class="progress-label muted">current epoch</div>
+        <div class="progress-value"><span id="iter">0</span><span class="muted"> / <span id="iters">0</span> steps</span></div>
+      </div>
+      <div class="progress-right">
+        <div class="progress-label muted">live</div>
+        <div class="progress-value" id="rate">&mdash;</div>
+      </div>
+    </div>
+    <div class="meter meter-thin" id="meter-epoch-wrap">
+      <div class="meter-fill meter-fill-2" id="meter-epoch"></div>
+    </div>
+    <div class="progress-foot muted mono">
+      <span id="epoch-pct">0%</span>
+      <span id="epoch-time"></span>
+    </div>
+  </section>
+
+  <section class="tiles" id="tiles"></section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Quality</h2>
+      <p class="muted">PSNR on <span id="val-count">&mdash;</span> held-out patches the model never trains on, measured with real rounding. Training PSNR is the noise-proxy figure and reads lower &mdash; that gap is expected, not a fault.</p>
+    </div>
+    <figure class="chart" id="chart-psnr"></figure>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Rate</h2>
+      <p class="muted">Bits per pixel straight out of the entropy model. <code>lambda</code> pins this: the run should hold a roughly flat rate while quality climbs. A rate that keeps falling is buying its numbers by throwing the picture away.</p>
+    </div>
+    <figure class="chart" id="chart-bpp"></figure>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Rate&ndash;distortion loss</h2>
+      <p class="muted"><code>lambda &times; distortion + rate</code> &mdash; the single number the optimiser actually minimises. The best checkpoint is chosen on the validation line, never the training one.</p>
+    </div>
+    <figure class="chart" id="chart-loss"></figure>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head row">
+      <div>
+        <h2>Per-epoch numbers</h2>
+        <p class="muted">The same data as the charts, exactly as the run log holds it.</p>
+      </div>
+      <button id="table-toggle" class="ghost" aria-expanded="false">Show table</button>
+    </div>
+    <div id="table-wrap" hidden></div>
+  </section>
+
+  <section class="panel two-up">
+    <div>
+      <div class="panel-head"><h2>Run</h2></div>
+      <dl id="config"></dl>
+    </div>
+    <div>
+      <div class="panel-head"><h2>Checkpoints</h2></div>
+      <dl id="weights"></dl>
+    </div>
+  </section>
+
+</main>
+
+<footer class="muted">
+  <p>Read-only. This page polls <code>/api/status</code> every 2s and never writes to the repository or signals the training process.</p>
+  <p>No mAP here: a codec has no classes to detect and no boxes to rank, so there is nothing to average precision over. Rate against distortion is the honest pair.</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
