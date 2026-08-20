@@ -26,10 +26,15 @@ RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu \
 
 COPY --chown=user jsoncam ./jsoncam
 COPY --chown=user web ./web
-COPY --chown=user checkpoints ./checkpoints
+# Only the slim, shippable checkpoints. checkpoints/ itself holds training
+# checkpoints that carry Adam state at three times the size and are useless for
+# inference, so copying the whole directory would triple the image for nothing.
+COPY --chown=user checkpoints/stable ./checkpoints
 
 USER user
 
+# PORT is read at runtime, not baked in: a Space expects 7860 and Cloud Run
+# injects its own, so the same image serves both.
 ENV JSONCAM_MODELS=/home/user/app/checkpoints \
     HOST=0.0.0.0 \
     PORT=7860

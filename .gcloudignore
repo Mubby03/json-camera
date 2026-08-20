@@ -1,0 +1,22 @@
+# Cloud Build uploads this directory before it reads the Dockerfile, so anything
+# not excluded here is sent over the wire. The working tree carries about 11 GB
+# of training data and fat checkpoints, none of which the image needs.
+.git/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+data/
+out/
+monitor/
+tests/
+scripts/
+
+# Only checkpoints/stable is copied by the Dockerfile.
+checkpoints/*
+!checkpoints/stable/
+!checkpoints/stable/**
+
+.DS_Store

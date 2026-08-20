@@ -57,3 +57,34 @@ and nothing to supervise.
   mismatch is refused with an explanation rather than handed back as noise.
 - The result id comes off the URL, so it is checked against the store root
   before any file is opened.
+
+## Deploying
+
+Two targets, one Dockerfile. `PORT` is read at runtime rather than baked in, so
+the same image serves a Space on 7860 and Cloud Run on whatever it injects.
+
+### Google Cloud Run
+
+```bash
+./scripts/deploy_cloudrun.sh
+```
+
+Cloud Run builds the image itself, so no local docker daemon is needed.
+`.gcloudignore` keeps the build context at about 8 MB; without it Cloud Build
+would upload the 11 GB of training data sitting in `data/`.
+
+The defaults in the script are deliberate. 512Mi OOMs on a 3 megapixel image and
+the failure looks like a bare 503, so it asks for 2Gi. Concurrency is 2 because
+encoding is CPU bound for seconds at a time and stacking requests on one
+instance only makes everyone wait. `--max-instances` is a hard cap so a burst
+cannot run up a bill. `--min-instances 0` is what keeps it inside the free tier,
+at the cost of a cold start of roughly half a minute while torch loads.
+
+### Hugging Face Space
+
+```bash
+.venv/bin/python scripts/deploy_space.py --repo you/json-camera
+```
+
+Note that Hugging Face now requires a PRO subscription for Docker and Gradio
+Spaces. Only static Spaces are free, so this path costs money as of August 2026.

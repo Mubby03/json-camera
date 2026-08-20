@@ -92,7 +92,8 @@ def main():
     shutil.copy(os.path.join(ROOT, "Dockerfile"), stage)
     shutil.copy(os.path.join(ROOT, "requirements-space.txt"), stage)
 
-    os.makedirs(os.path.join(stage, "checkpoints"))
+    # Mirrors the repo layout so the one Dockerfile works here and on Cloud Run.
+    os.makedirs(os.path.join(stage, "checkpoints", "stable"))
     total = 0
     for c in cks:
         # A training checkpoint carries Adam state at roughly twice the weight
@@ -103,7 +104,7 @@ def main():
         if "opt" in ck:
             sys.exit(f"{c} still has optimiser state. Slim it first:\n"
                      f"  jsoncam export {c} -o checkpoints/stable/{os.path.basename(c)}")
-        shutil.copy(c, os.path.join(stage, "checkpoints"))
+        shutil.copy(c, os.path.join(stage, "checkpoints", "stable"))
         total += os.path.getsize(c)
         print(f"  ship {os.path.basename(c)}  ({os.path.getsize(c)/1e6:.1f} MB)")
 
