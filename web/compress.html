@@ -141,7 +141,7 @@
   });
 
   function render(r) {
-    const p = (n, d) => n == null ? '&mdash;'.replace('&mdash;', '-') : n.toFixed(d);
+    const p = (n, d) => n == null ? '-' : n.toFixed(d);
     const dPSNR = r.jpeg && r.psnr != null && r.jpeg.psnr != null ? r.psnr - r.jpeg.psnr : null;
     const dMS   = r.jpeg ? r.ms_ssim_db - r.jpeg.ms_ssim_db : null;
 
