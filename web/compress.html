@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compress | json-camera</title>
+<meta name="description" content="Turn a photograph into a json-camera file and see exactly what it cost.">
+<meta name="theme-color" content="#0B0B0D">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📷</text></svg>">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-in">
+    <a class="brand" href="/">JSON<b>CAMERA</b></a>
+    <div class="nav-links">
+      <a href="/#how">How it works</a>
+      <a href="/compress" class="on">Compress</a>
+      <a href="/decompress">Decompress</a>
+    </div>
+  </div>
+</nav>
+
+<header class="page-head">
+  <div class="wrap">
+    <p class="kicker on">Step one</p>
+    <h1>Compress</h1>
+    <p>
+      Drop in a photograph. It comes back as a JSON file named after your original,
+      with the full accounting of where every byte went and an honest comparison
+      against JPEG at the same size.
+    </p>
+  </div>
+</header>
+
+<main class="app">
+  <div class="wrap cols">
+
+    <form class="panel" id="form">
+      <div class="panel-hd">Input</div>
+      <div class="panel-bd">
+
+        <label class="drop" id="drop" for="file">
+          <input type="file" id="file" accept="image/*">
+          <div class="big">Drop an image here</div>
+          <div class="small">or click to choose one</div>
+        </label>
+        <div class="picked" id="picked" hidden>
+          <span class="nm" id="picked-name"></span>
+          <span class="sz" id="picked-size"></span>
+        </div>
+
+        <div class="field">
+          <label for="model">Model, which is the quality level</label>
+          <select id="model"></select>
+          <p class="hint" id="model-hint">Lambda is the quality knob. Higher means a better picture and a bigger file.</p>
+        </div>
+
+        <div class="field">
+          <label>Text encoding</label>
+          <div class="segment">
+            <label><input type="radio" name="enc" value="b85" checked><span>b85 &nbsp;+25%</span></label>
+            <label><input type="radio" name="enc" value="b64"><span>b64 &nbsp;+33%</span></label>
+          </div>
+          <p class="hint">Base85 fits about 6.1 bits per character, base64 fits 6. This is the cost of the container being text.</p>
+        </div>
+
+        <div class="field">
+          <label class="check">
+            <input type="checkbox" id="compare" checked>
+            <span>Compare against JPEG at the same file size</span>
+          </label>
+          <p class="hint">JPEG quality is binary searched until it lands on your file size, so neither codec gets a favourable operating point.</p>
+        </div>
+
+        <div class="field">
+          <button class="btn" id="go" style="width:100%" disabled>Compress</button>
+        </div>
+
+      </div>
+    </form>
+
+    <div id="out" class="stack">
+      <div class="empty">Your result will appear here.</div>
+    </div>
+
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <div>
+      <p class="by">Built by <a href="https://mubby.space" target="_blank" rel="noopener">mubby.space</a></p>
+      <p>Images are processed in memory and results are deleted after an hour. Nothing is kept.</p>
+    </div>
+    <div class="foot-links">
+      <a href="/">Home</a>
+      <a href="/decompress">Decompress</a>
+    </div>
+  </div>
+</footer>
+
+<script src="/static/app.js"></script>
+<script>
+(function () {
+  const form = document.getElementById('form');
+  const out  = document.getElementById('out');
+  const go   = document.getElementById('go');
+  let picked = null;
+
+  JC.dropzone(document.getElementById('drop'), document.getElementById('file'), (f) => {
+    picked = f;
+    JC.showPicked(f);
+    go.disabled = !f;
+  });
+
+  JC.fillModels(document.getElementById('model'), document.getElementById('model-hint'));
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!picked) return;
+
+    const body = new FormData();
+    body.append('file', picked);
+    body.append('model_id', document.getElementById('model').value);
+    body.append('encoding', form.querySelector('input[name=enc]:checked').value);
+    body.append('compare', document.getElementById('compare').checked ? 'true' : 'false');
+
+    go.disabled = true;
+    JC.busy(out, 'Encoding, then decoding it back to check the quality. A large photograph takes a few seconds.');
+
+    try {
+      const r = await JC.post('/api/compress', body);
+      render(r);
+    } catch (err) {
+      JC.fail(out, err.message);
+    } finally {
+      go.disabled = false;
+    }
+  });
+
+  function render(r) {
+    const p = (n, d) => n == null ? '&mdash;'.replace('&mdash;', '-') : n.toFixed(d);
+    const dPSNR = r.jpeg && r.psnr != null && r.jpeg.psnr != null ? r.psnr - r.jpeg.psnr : null;
+    const dMS   = r.jpeg ? r.ms_ssim_db - r.jpeg.ms_ssim_db : null;
+
+    let html = '';
+
+    if (r.note) html += `<div class="info">${JC.esc(r.note)}</div>`;
+
+    html += `
+      <div class="panel">
+        <div class="panel-hd">
+          <span>${JC.esc(r.original_name)} &nbsp;&middot;&nbsp; ${r.width} by ${r.height}</span>
+          <span>${JC.bytes(r.raw_bytes)} raw RGB</span>
+        </div>
+        <div class="compare">
+          <div class="shot">
+            <div class="cap"><span>Original</span><span>${JC.bytes(r.source_bytes)}</span></div>
+            <img src="/api/preview/${r.id}/original" alt="The original image you uploaded">
+          </div>
+          <div class="shot">
+            <div class="cap"><span>Rebuilt from the JSON</span><b>${JC.bytes(r.json_bytes)}</b></div>
+            <img src="/api/preview/${r.id}/decoded" alt="The image rebuilt from the JSON file">
+          </div>
+        </div>
+      </div>`;
+
+    html += `
+      <div class="grid-4">
+        <div class="cellstat"><div class="k">JSON file</div><div class="v good">${JC.bytes(r.json_bytes)}</div><div class="s">${p(r.bpp, 4)} bits per pixel</div></div>
+        <div class="cellstat"><div class="k">Smaller than raw</div><div class="v">${Math.round(r.ratio_vs_raw)}&times;</div><div class="s">from ${JC.bytes(r.raw_bytes)}</div></div>
+        <div class="cellstat"><div class="k">PSNR</div><div class="v">${p(r.psnr, 2)} dB</div><div class="s">pixel accuracy</div></div>
+        <div class="cellstat"><div class="k">MS-SSIM</div><div class="v">${p(r.ms_ssim, 4)}</div><div class="s">${p(r.ms_ssim_db, 2)} dB, perceptual</div></div>
+      </div>`;
+
+    html += `
+      <div class="panel">
+        <div class="panel-hd">Where the bytes went</div>
+        <div class="table-scroll"><table>
+          <tbody>
+            <tr><td>Original, as raw RGB</td><td class="n">${JC.bytes(r.raw_bytes)}</td><td class="n muted">${r.width} &times; ${r.height} &times; 3</td></tr>
+            <tr><td>Latent grid</td><td class="n">${r.latent.channels} &times; ${r.latent.height} &times; ${r.latent.width}</td><td class="n muted">${r.symbols.toLocaleString()} numbers</td></tr>
+            <tr class="hi"><td>Bitstream</td><td class="n">${JC.bytes(r.bitstream_bytes)}</td><td class="n muted">${p(r.bpp, 4)} bpp</td></tr>
+            <tr class="hi"><td>JSON file</td><td class="n">${JC.bytes(r.json_bytes)}</td><td class="n muted">plus ${Math.round(r.text_overhead_pct)}% text armour</td></tr>
+            <tr><td>Time</td><td class="n">${p(r.encode_seconds, 1)} s encode</td><td class="n muted">${p(r.decode_seconds, 1)} s decode</td></tr>
+          </tbody>
+        </table></div>
+      </div>`;
+
+    if (r.jpeg) {
+      const verdict = dPSNR > 0 ? 'better than' : 'worse than';
+      html += `
+        <div class="panel">
+          <div class="panel-hd">Against JPEG at the same file size</div>
+          <div class="table-scroll"><table>
+            <thead><tr><th>Codec</th><th style="text-align:right">Size</th><th style="text-align:right">PSNR</th><th style="text-align:right">MS-SSIM</th></tr></thead>
+            <tbody>
+              <tr class="hi"><td>json-camera</td><td class="n">${JC.bytes(r.json_bytes)}</td><td class="n">${p(r.psnr, 2)} dB</td><td class="n">${p(r.ms_ssim, 4)}</td></tr>
+              <tr><td>JPEG, quality ${r.jpeg.quality}</td><td class="n">${JC.bytes(r.jpeg.bytes)}</td><td class="n">${p(r.jpeg.psnr, 2)} dB</td><td class="n">${p(r.jpeg.ms_ssim, 4)}</td></tr>
+            </tbody>
+          </table></div>
+          <div class="panel-bd" style="border-top:1px solid var(--line)">
+            json-camera is <strong style="color:${dPSNR > 0 ? 'var(--accent)' : 'var(--warn)'}">${Math.abs(dPSNR).toFixed(2)} dB ${verdict} JPEG</strong>
+            on PSNR here, and ${Math.abs(dMS).toFixed(2)} dB ${dMS > 0 ? 'better' : 'worse'} on MS-SSIM.
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-hd">Side by side with that JPEG</div>
+          <div class="compare">
+            <div class="shot"><div class="cap"><span>json-camera</span><b>${p(r.psnr, 2)} dB</b></div><img src="/api/preview/${r.id}/decoded" alt="Rebuilt by json-camera"></div>
+            <div class="shot"><div class="cap"><span>JPEG q=${r.jpeg.quality}</span><span>${p(r.jpeg.psnr, 2)} dB</span></div><img src="/api/preview/${r.id}/jpeg" alt="The same image as a size matched JPEG"></div>
+          </div>
+        </div>`;
+    }
+
+    if (r.clipped) {
+      html += `<div class="info">${r.clipped.toLocaleString()} symbols hit the edge of the frequency table. This is harmless and costs a little quality.</div>`;
+    }
+
+    html += `
+      <details class="disclose">
+        <summary>Peek inside the JSON</summary>
+        <div class="inner">
+          <pre class="code">${JC.esc(JSON.stringify(r.header, null, 2))}
+
+<span class="s">"payload"</span>: {
+  <span class="s">"encoding"</span>: "b85",
+  <span class="s">"data"</span>: "${JC.esc(r.payload_preview)}&hellip;"
+  <span class="s">// ${r.payload_chars.toLocaleString()} characters in total</span>
+}</pre>
+        </div>
+      </details>`;
+
+    html += `
+      <div class="panel">
+        <div class="panel-hd">Download</div>
+        <div class="panel-bd">
+          <p style="margin:0 0 18px; color:var(--muted); font-size:14.5px">
+            Saved as <strong class="mono" style="color:var(--text)">${JC.esc(r.json_name)}</strong>,
+            named after the file you gave it. Your original filename is stored inside the JSON,
+            so decompressing hands the picture back under the same name.
+          </p>
+          <a class="btn" href="/api/download/${r.id}" download>Download the JSON file</a>
+          <p class="hint">Keep the model note: this file needs checkpoint <span class="mono">${JC.esc(r.model.fingerprint)}</span> to open.</p>
+        </div>
+      </div>`;
+
+    out.innerHTML = html;
+    out.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+})();
+</script>
+</body>
+</html>

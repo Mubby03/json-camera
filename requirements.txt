@@ -3,6 +3,14 @@ torchvision
 numpy
 pillow
 tqdm
+
+# web app
+fastapi
+uvicorn
+python-multipart
+
+# gradio demo (optional, the web app does not need it)
 gradio
 huggingface_hub
+
 pytest

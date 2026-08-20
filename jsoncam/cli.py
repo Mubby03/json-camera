@@ -66,7 +66,8 @@ def cmd_encode(args):
     model, ck = codec.load_checkpoint(args.checkpoint)
     img = Image.open(args.input)
     doc = codec.encode_image(model, img, encoding=args.encoding,
-                             precision=args.precision, device=args.device)
+                             precision=args.precision, device=args.device,
+                             name=os.path.basename(args.input))
     out = args.output or os.path.splitext(args.input)[0] + ".json"
     codec.write_json(doc, out)
     s = codec.stats(doc, out)
@@ -88,7 +89,9 @@ def cmd_decode(args):
     model, ck = codec.load_checkpoint(args.checkpoint)
     doc = codec.read_json(args.input)
     img = codec.decode_dict(model, doc, device=args.device, strict=not args.force)
-    out = args.output or os.path.splitext(args.input)[0] + ".decoded.png"
+    # Prefer the name the picture went in with over the name of the .json.
+    stem = os.path.splitext(doc.get("image", {}).get("name") or os.path.basename(args.input))[0]
+    out = args.output or os.path.join(os.path.dirname(args.input) or ".", stem + ".png")
     img.save(out)
     print(f"{args.input}  ->  {out}   ({img.size[0]}x{img.size[1]})")
 

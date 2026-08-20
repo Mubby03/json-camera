@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>json-camera | a photograph, stored as text</title>
+<meta name="description" content="A neural network that compresses photographs into JSON files, and gets them back out again. Beats JPEG at the same file size.">
+<meta property="og:title" content="json-camera">
+<meta property="og:description" content="A neural network that compresses photographs into JSON files, and gets them back out again.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#0B0B0D">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📷</text></svg>">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-in">
+    <a class="brand" href="/">JSON<b>CAMERA</b></a>
+    <div class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="/compress">Compress</a>
+      <a href="/decompress">Decompress</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="kicker on">Learned image compression</p>
+    <h1>Your photograph, stored as <em>text</em>.</h1>
+    <p class="lead">
+      A convolutional network crushes a picture down to a small grid of whole numbers.
+      A second network learns exactly what those numbers cost in bits, packs them at
+      the theoretical limit, and writes the result into a JSON file. A third network
+      reads that file and rebuilds the photograph.
+    </p>
+    <p class="lead">
+      Nothing about the transform is hand designed. It was trained against a loss
+      that counts the output file size in bits, so it learned what to keep and what
+      to throw away by being scored on the answer.
+    </p>
+    <div class="hero-actions">
+      <a class="btn" href="/compress">Compress an image</a>
+      <a class="btn btn-ghost" href="/decompress">Decompress a file</a>
+    </div>
+  </div>
+</header>
+
+<section class="band">
+  <div class="band-grid">
+    <div class="band-cell">
+      <div class="n">76&times;</div>
+      <div class="t">smaller than raw RGB, at 0.31 bits per pixel</div>
+    </div>
+    <div class="band-cell">
+      <div class="n">+2.21 dB</div>
+      <div class="t">better than JPEG at a matched file size</div>
+    </div>
+    <div class="band-cell">
+      <div class="n">12 / 12</div>
+      <div class="t">held out photographs where it beat JPEG</div>
+    </div>
+    <div class="band-cell">
+      <div class="n">0.35 s</div>
+      <div class="t">to rebuild a 2 megapixel image on a laptop CPU</div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="how">
+  <div class="wrap">
+    <p class="kicker">The pipeline</p>
+    <h2>What actually happens</h2>
+    <p class="sub">
+      Six steps, in the order they run. The interesting one is step four, and it is
+      the step most explanations skip.
+    </p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="num">01</div>
+        <h3>Images are numbers</h3>
+        <p>A 4K photo is 3840 by 2160 by 3, about 25 MB of raw bytes. Neighbouring pixels are nearly always similar, so most of those bytes repeat something you already know.</p>
+      </div>
+      <div class="step">
+        <div class="num">02</div>
+        <h3>Strided convolutions squeeze it</h3>
+        <p>A convolution slides a small window across the image. Give it a stride of two and it hops two pixels at a time, halving each dimension. Four in a row take 3840 by 2160 down to a 240 by 135 grid.</p>
+      </div>
+      <div class="step">
+        <div class="num">03</div>
+        <h3>Quantisation</h3>
+        <p>The grid is rounded to whole numbers. This is the lossy step and where most of the saving comes from. Rounding has no gradient, so during training we add uniform noise instead as a smooth stand in.</p>
+      </div>
+      <div class="step">
+        <div class="num">04</div>
+        <h3>The entropy model counts bits</h3>
+        <p>A second network learns how values are distributed in each channel. Knowing a value's probability tells you its exact cost, which is minus log two of p. Common values cost a fraction of a bit.</p>
+      </div>
+      <div class="step">
+        <div class="num">05</div>
+        <h3>rANS packs the bits</h3>
+        <p>A range coder writes the symbol stream at essentially the theoretical limit, measured here at within 1.6 percent of Shannon entropy. This is where the ratio actually comes from.</p>
+      </div>
+      <div class="step">
+        <div class="num">06</div>
+        <h3>JSON</h3>
+        <p>The bitstream is armoured into base85 text and dropped into a readable header. Your original filename rides along inside, so decoding hands the picture back under the name it went in with.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="wrap">
+    <p class="kicker">The trick</p>
+    <h2>The loss function is the whole idea</h2>
+    <p class="sub">
+      Two terms, fighting each other, both differentiable.
+    </p>
+    <pre class="code" style="font-size:15px; padding:26px"><span class="s">loss</span> = lambda &times; distortion + rate</pre>
+    <p class="sub" style="margin-top:28px; margin-bottom:0">
+      <strong>Rate</strong> is real bits, straight out of the entropy model in step four.
+      <strong>Distortion</strong> is how wrong the rebuilt picture is. Because the rate term is
+      differentiable, backpropagation can push the encoder toward pictures that are cheap to
+      write down and still sufficient to rebuild. Without a learned entropy model you are
+      just saving an array and hoping a generic compressor does well on it afterwards.
+      <br><br>
+      <strong>Lambda</strong> is the quality knob, and it is the only difference between a
+      200 KB model and a 2 MB one. One model per quality level, which is why the compressor
+      has a model picker rather than a slider.
+    </p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <p class="kicker">Read this part</p>
+    <h2>Three things worth being straight about</h2>
+    <div class="notes">
+      <div class="note">
+        <h3>The weights are part of the format</h3>
+        <p>The decoder cannot rebuild anything without the exact weights that encoded it, which is why every file carries a fingerprint and decoding refuses on a mismatch. The checkpoint is a shared codebook, like the tables baked into every JPEG decoder. Send someone a file and not the model, and they get nothing.</p>
+      </div>
+      <div class="note">
+        <h3>This is compression, not encryption</h3>
+        <p>The payload looks unreadable, but there is no key and no secret. Anyone holding the checkpoint can read it. Do not use this to hide anything. If you want secrecy, encrypt the file afterwards. The two are separate jobs and mixing them makes both worse.</p>
+      </div>
+      <div class="note">
+        <h3>JSON costs 25 percent</h3>
+        <p>Text can only carry about 6.1 bits per character in base85, so the file is a quarter larger than the raw bitstream. That is the price of the container being JSON, not a flaw in the codec. Both numbers are always shown so you can see the tax.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="wrap">
+    <p class="kicker on">Your turn</p>
+    <h2>Try it out.</h2>
+    <p>
+      Drop in a photograph and watch it become a text file, then drop the text file
+      back in and watch it become a photograph again.
+    </p>
+    <a class="btn" href="/compress">Try it out</a>
+  </div>
+</section>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <div>
+      <p class="by">Built by <a href="https://mubby.space" target="_blank" rel="noopener">mubby.space</a></p>
+      <p>Trained on 800 DIV2K photographs. Scored against JPEG binary searched to the same file size, because matching on bytes is the only honest comparison.</p>
+    </div>
+    <div class="foot-links">
+      <a href="/compress">Compress</a>
+      <a href="/decompress">Decompress</a>
+      <a href="#how">How it works</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

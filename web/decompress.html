@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decompress | json-camera</title>
+<meta name="description" content="Turn a json-camera file back into the photograph it came from.">
+<meta name="theme-color" content="#0B0B0D">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📷</text></svg>">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-in">
+    <a class="brand" href="/">JSON<b>CAMERA</b></a>
+    <div class="nav-links">
+      <a href="/#how">How it works</a>
+      <a href="/compress">Compress</a>
+      <a href="/decompress" class="on">Decompress</a>
+    </div>
+  </div>
+</nav>
+
+<header class="page-head">
+  <div class="wrap">
+    <p class="kicker on">Step two</p>
+    <h1>Decompress</h1>
+    <p>
+      Drop in a json-camera file. It comes back as the photograph it started as,
+      under the filename it went in with. The right model is picked automatically
+      by matching the fingerprint stored in the file.
+    </p>
+  </div>
+</header>
+
+<main class="app">
+  <div class="wrap cols">
+
+    <form class="panel" id="form">
+      <div class="panel-hd">Input</div>
+      <div class="panel-bd">
+
+        <label class="drop" id="drop" for="file">
+          <input type="file" id="file" accept=".json,application/json">
+          <div class="big">Drop a .json file here</div>
+          <div class="small">or click to choose one</div>
+        </label>
+        <div class="picked" id="picked" hidden>
+          <span class="nm" id="picked-name"></span>
+          <span class="sz" id="picked-size"></span>
+        </div>
+
+        <div class="field">
+          <label for="model">Model</label>
+          <select id="model"></select>
+          <p class="hint">
+            Leave this on automatic unless you know better. The file records which
+            checkpoint made it, and decoding with any other one is refused rather
+            than quietly handed back as noise.
+          </p>
+        </div>
+
+        <div class="field">
+          <button class="btn" id="go" style="width:100%" disabled>Decompress</button>
+        </div>
+
+        <div class="field">
+          <p class="hint" style="margin:0">
+            Only files made by this site will open. The model weights are part of the
+            format, so a file made with a checkpoint this server does not hold cannot
+            be rebuilt by anything.
+          </p>
+        </div>
+
+      </div>
+    </form>
+
+    <div id="out" class="stack">
+      <div class="empty">Your image will appear here.</div>
+    </div>
+
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <div>
+      <p class="by">Built by <a href="https://mubby.space" target="_blank" rel="noopener">mubby.space</a></p>
+      <p>Files are processed in memory and results are deleted after an hour. Nothing is kept.</p>
+    </div>
+    <div class="foot-links">
+      <a href="/">Home</a>
+      <a href="/compress">Compress</a>
+    </div>
+  </div>
+</footer>
+
+<script src="/static/app.js"></script>
+<script>
+(function () {
+  const form = document.getElementById('form');
+  const out  = document.getElementById('out');
+  const go   = document.getElementById('go');
+  let picked = null;
+
+  JC.dropzone(document.getElementById('drop'), document.getElementById('file'), (f) => {
+    picked = f;
+    JC.showPicked(f);
+    go.disabled = !f;
+  });
+
+  JC.fillModels(document.getElementById('model'), null, true);
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!picked) return;
+
+    const body = new FormData();
+    body.append('file', picked);
+    const chosen = document.getElementById('model').value;
+    if (chosen) body.append('model_id', chosen);
+
+    go.disabled = true;
+    JC.busy(out, 'Reading the bitstream and rebuilding the picture.');
+
+    try {
+      const r = await JC.post('/api/decompress', body);
+      render(r);
+    } catch (err) {
+      JC.fail(out, err.message);
+    } finally {
+      go.disabled = false;
+    }
+  });
+
+  function render(r) {
+    const name = r.original_name || r.png_name;
+    let html = `
+      <div class="panel">
+        <div class="panel-hd">
+          <span>${JC.esc(name)}</span>
+          <span>${r.width} by ${r.height}</span>
+        </div>
+        <div class="compare solo">
+          <div class="shot">
+            <div class="cap"><span>Rebuilt from the JSON</span><b>${JC.bytes(r.json_bytes)} of text</b></div>
+            <img src="/api/preview/${r.id}/decoded" alt="The photograph rebuilt from the JSON file">
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-4">
+        <div class="cellstat"><div class="k">Dimensions</div><div class="v">${r.width}&times;${r.height}</div><div class="s">${((r.width * r.height) / 1e6).toFixed(1)} megapixels</div></div>
+        <div class="cellstat"><div class="k">JSON in</div><div class="v">${JC.bytes(r.json_bytes)}</div><div class="s">${JC.bytes(r.bitstream_bytes)} of bitstream</div></div>
+        <div class="cellstat"><div class="k">Recovered</div><div class="v good">${JC.bytes(r.width * r.height * 3)}</div><div class="s">as raw RGB pixels</div></div>
+        <div class="cellstat"><div class="k">Decode time</div><div class="v">${r.decode_seconds.toFixed(1)} s</div><div class="s">on the CPU</div></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-hd">What the file said about itself</div>
+        <div class="table-scroll"><table>
+          <tbody>
+            <tr><td>Original filename</td><td class="n">${JC.esc(r.original_name || 'not recorded')}</td></tr>
+            <tr><td>Encoded on</td><td class="n">${JC.esc((r.created || 'unknown').replace('T', ' at '))}</td></tr>
+            <tr><td>Model fingerprint</td><td class="n">${JC.esc(r.fingerprint || 'none')}</td></tr>
+            <tr><td>Opened with</td><td class="n">${JC.esc(r.model)}</td></tr>
+            <tr><td>Latent grid</td><td class="n">${r.latent ? r.latent.channels + ' &times; ' + r.latent.height + ' &times; ' + r.latent.width : '-'}</td></tr>
+          </tbody>
+        </table></div>
+      </div>
+
+      <details class="disclose">
+        <summary>Peek inside the JSON</summary>
+        <div class="inner"><pre class="code">${JC.esc(JSON.stringify(r.header, null, 2))}</pre></div>
+      </details>
+
+      <div class="panel">
+        <div class="panel-hd">Download</div>
+        <div class="panel-bd">
+          <p style="margin:0 0 18px; color:var(--muted); font-size:14.5px">
+            Saved as <strong class="mono" style="color:var(--text)">${JC.esc(r.png_name)}</strong>,
+            ${r.original_name ? 'taken from the name stored inside the file' : 'taken from the name of the file you gave it'}.
+          </p>
+          <a class="btn" href="/api/download/${r.id}" download>Download the image</a>
+        </div>
+      </div>`;
+
+    out.innerHTML = html;
+    out.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+})();
+</script>
+</body>
+</html>

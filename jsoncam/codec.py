@@ -137,8 +137,13 @@ def model_fingerprint(model):
 
 
 @torch.no_grad()
-def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TILE):
-    """PIL image -> JSON-ready dict."""
+def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TILE, name=None):
+    """PIL image -> JSON-ready dict.
+
+    `name` is the original filename.  It rides along in the header so a decoder
+    can hand the picture back under the name it went in with, instead of
+    whatever the .json happened to be called.
+    """
     model.eval()
     model.to(device)
     prior_cpu = copy.deepcopy(model.prior).cpu().eval()
@@ -171,7 +176,7 @@ def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TI
         "format": "json-camera/1",
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "model": {**model.config, "fingerprint": model_fingerprint(model)},
-        "image": {"width": W, "height": H},
+        "image": {"width": W, "height": H, "name": name},
         "latent": {"channels": C, "height": lh, "width": lw},
         "codec": {
             "kind": "rans",
