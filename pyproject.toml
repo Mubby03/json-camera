@@ -1,0 +1,16 @@
+[project]
+name = "jsoncam"
+version = "0.1.0"
+description = "A learned image codec that stores pictures as JSON."
+requires-python = ">=3.10"
+dependencies = ["torch", "torchvision", "numpy", "pillow", "tqdm"]
+
+[project.scripts]
+jsoncam = "jsoncam.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["jsoncam"]
