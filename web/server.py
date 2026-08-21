@@ -38,6 +38,11 @@ ROOT = HERE.parent
 MODEL_DIR = Path(os.environ.get("JSONCAM_MODELS", ROOT / "checkpoints" / "stable"))
 MAX_SIDE = int(os.environ.get("JSONCAM_MAX_SIDE", "3840"))
 MAX_UPLOAD = int(os.environ.get("JSONCAM_MAX_UPLOAD", str(40 * 1024 * 1024)))
+# Lossless peaks at roughly 150 MB of working memory per megapixel, measured, so
+# a 13 megapixel photograph needs about 1.9 GB.  The machine has 2 GB, and going
+# over does not fail politely: the kernel kills the process and every other
+# request in flight dies with it.  Refuse clearly instead.
+MAX_LOSSLESS_MP = float(os.environ.get("JSONCAM_MAX_LOSSLESS_MP", "10"))
 STORE = Path(tempfile.mkdtemp(prefix="jsoncam-web-"))
 STORE_TTL = 3600
 
@@ -218,6 +223,14 @@ async def api_compress(
 
     stem = safe_stem(file.filename)
     if str(mode).lower() == "lossless":
+        mp = img.width * img.height / 1e6
+        if mp > MAX_LOSSLESS_MP:
+            raise HTTPException(413, (
+                f"That image is {mp:.1f} megapixels and lossless mode is capped at "
+                f"{MAX_LOSSLESS_MP:.0f} here. Lossless cannot resize it for you, because "
+                f"resizing is exactly the thing this mode promises not to do. Use lossy "
+                f"for an image this size, or run it locally with "
+                f"`jsoncam encode photo.png --lossless`, which has no cap."))
         return _compress_lossless(file, img, raw, stem, note)
 
     model_id = model_id or default_model_id()

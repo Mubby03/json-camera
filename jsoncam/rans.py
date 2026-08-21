@@ -53,18 +53,27 @@ def encode(symbols, chans, freqs, starts, precision, lanes=None):
     T = (n + lanes - 1) // lanes
     pad = T * lanes - n
 
-    syms = np.concatenate([symbols, np.zeros(pad, np.int64)]).reshape(T, lanes)
-    chs = np.concatenate([chans, np.zeros(pad, np.int64)]).reshape(T, lanes)
-
-    f_all = freqs[chs, syms]
-    s_all = starts[chs, syms]
-    xmax_all = ((LOWER >> precision) << WORD_BITS) * f_all
+    # Keep whatever integer width the caller chose.  Forcing int64 here doubles
+    # two arrays the size of the image for no benefit: they are only ever used to
+    # index frequency tables, which int32 does just as well.
+    syms = np.concatenate([symbols, np.zeros(pad, symbols.dtype)]).reshape(T, lanes)
+    chs = np.concatenate([chans, np.zeros(pad, chans.dtype)]).reshape(T, lanes)
 
     x = np.full(lanes, LOWER, dtype=np.int64)
     chunks = []
+    scale = (LOWER >> precision) << WORD_BITS
     # Encode backwards: rANS is a stack, so the decoder pops in forward order.
+    #
+    # The table lookups happen per step rather than as three whole-stream arrays.
+    # Precomputing them reads better but costs 8 bytes per sample three times
+    # over, which on a 13 megapixel image is 933 MB of memory that exists only to
+    # be read one row at a time. That was enough to have the server killed by the
+    # OOM reaper mid request.
     for t in range(T - 1, -1, -1):
-        f, s, xmax = f_all[t], s_all[t], xmax_all[t]
+        ct, st = chs[t], syms[t]
+        f = freqs[ct, st]
+        s = starts[ct, st]
+        xmax = scale * f
         m = x >= xmax
         if m.any():
             chunks.append((x[m] & WORD_MASK).astype(np.uint16))
@@ -87,7 +96,7 @@ def decode(blob, chans, freqs, starts, lut, precision, lanes, count):
     states = np.frombuffer(blob[-state_bytes:], dtype="<u4").astype(np.int64).copy()
     words = np.frombuffer(blob[:-state_bytes], dtype="<u2").astype(np.int64)
 
-    chs = np.concatenate([chans, np.zeros(pad, np.int64)]).reshape(T, lanes)
+    chs = np.concatenate([chans, np.zeros(pad, chans.dtype)]).reshape(T, lanes)
     out = np.zeros((T, lanes), dtype=np.int64)
 
     x = states

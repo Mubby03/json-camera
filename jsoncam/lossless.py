@@ -165,13 +165,23 @@ def encode_image(img, name=None):
 
     planes = rgb_to_ycocg(a)
     resid = [predict_residual(p) for p in planes]
+    del planes
     freqs, los, his = _tables(resid)
     starts, _ = rans.build_luts(freqs)
 
-    # Symbols are 0-based indices into each plane's own table.
-    syms = np.concatenate([(r.ravel() - lo) for r, lo in zip(resid, los)])
-    chans = np.repeat(np.arange(3, dtype=np.int64), H * W)
-    blob, lanes = rans.encode(syms.astype(np.int64), chans, freqs, starts, PRECISION)
+    # Symbols are 0-based indices into each plane's own table.  int32 throughout:
+    # a residual index cannot exceed a few thousand, and int64 would cost eight
+    # bytes per sample twice over, which on a large photograph is enough memory
+    # to have the process killed.  Planes are released as they are consumed.
+    syms = np.empty(3 * H * W, dtype=np.int32)
+    for i, (r, lo) in enumerate(zip(resid, los)):
+        syms[i * H * W : (i + 1) * H * W] = (r.ravel() - lo).astype(np.int32)
+        resid[i] = None
+    del resid
+    chans = np.repeat(np.arange(3, dtype=np.int32), H * W)
+    count = int(syms.size)
+    blob, lanes = rans.encode(syms, chans, freqs, starts, PRECISION)
+    del syms, chans
 
     return {
         "format": FORMAT,
@@ -185,7 +195,7 @@ def encode_image(img, name=None):
             "transform": "ycocg-r+med",
             "precision": PRECISION,
             "lanes": lanes,
-            "count": int(syms.size),
+            "count": count,
             "bitstream_bytes": len(blob),
             "range_lo": los.tolist(),
             "range_hi": his.tolist(),
@@ -208,9 +218,10 @@ def decode_dict(doc):
     starts, lut = rans.build_luts(freqs)
 
     blob = base64.b85decode(doc["payload"]["data"].encode("ascii"))
-    chans = np.repeat(np.arange(3, dtype=np.int64), H * W)
+    chans = np.repeat(np.arange(3, dtype=np.int32), H * W)
     syms = rans.decode(blob, chans, freqs, starts, lut,
                        cdc["precision"], cdc["lanes"], cdc["count"])
+    del chans
 
     planes = []
     for i in range(3):
