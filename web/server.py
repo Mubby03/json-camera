@@ -205,8 +205,12 @@ async def api_compress(
     except (UnidentifiedImageError, OSError):
         raise HTTPException(415, "that does not look like an image we can read")
 
+    # The size cap exists because the neural codec is seconds per megapixel. It
+    # must never apply to lossless, where resizing would discard the very thing
+    # the mode promises to keep. Prediction and entropy coding are fast enough
+    # to take the image at full resolution.
     note = None
-    if max(img.size) > MAX_SIDE:
+    if str(mode).lower() != "lossless" and max(img.size) > MAX_SIDE:
         scale = MAX_SIDE / max(img.size)
         size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
         img = img.resize(size, Image.LANCZOS)
