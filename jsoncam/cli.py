@@ -92,7 +92,7 @@ def cmd_decode(args):
     # Prefer the name the picture went in with over the name of the .json.
     stem = os.path.splitext(doc.get("image", {}).get("name") or os.path.basename(args.input))[0]
     out = args.output or os.path.join(os.path.dirname(args.input) or ".", stem + ".png")
-    img.save(out)
+    img.save(out, icc_profile=img.info.get("icc_profile"))
     print(f"{args.input}  ->  {out}   ({img.size[0]}x{img.size[1]})")
 
 

@@ -21,7 +21,7 @@ import time
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image
+from PIL import Image, ImageOps
 
 from . import rans
 from .model import JSONCamera
@@ -143,10 +143,20 @@ def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TI
     `name` is the original filename.  It rides along in the header so a decoder
     can hand the picture back under the name it went in with, instead of
     whatever the .json happened to be called.
+
+    The colour profile rides along too.  Phones shoot Display P3, and the pixel
+    values in such a file only mean the right colour if the profile that
+    describes them travels with them.  Drop the profile and a viewer reads those
+    same numbers as sRGB, which shifts every colour in the picture before the
+    codec has done anything at all.
     """
     model.eval()
     model.to(device)
     prior_cpu = copy.deepcopy(model.prior).cpu().eval()
+    # Rotation first: an orientation tag is metadata, and baking it in here means
+    # the pixels we encode are the pixels the photographer saw.
+    img = ImageOps.exif_transpose(img)
+    icc = img.info.get("icc_profile")
     img = img.convert("RGB")
     W, H = img.size
     x = torch.from_numpy(np.asarray(img).copy()).permute(2, 0, 1).float().div(255.0).unsqueeze(0)
@@ -176,7 +186,10 @@ def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TI
         "format": "json-camera/1",
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "model": {**model.config, "fingerprint": model_fingerprint(model)},
-        "image": {"width": W, "height": H, "name": name},
+        "image": {
+            "width": W, "height": H, "name": name,
+            "icc_profile": base64.b64encode(icc).decode("ascii") if icc else None,
+        },
         "latent": {"channels": C, "height": lh, "width": lw},
         "codec": {
             "kind": "rans",
@@ -225,7 +238,11 @@ def decode_dict(model, doc, device="cpu", tile=TILE, strict=True):
     H, W = doc["image"]["height"], doc["image"]["width"]
     x = x[:, :, :H, :W].clamp(0, 1)
     arr = (x[0].permute(1, 2, 0).numpy() * 255.0).round().astype(np.uint8)
-    return Image.fromarray(arr)
+    out = Image.fromarray(arr)
+    icc = (doc.get("image") or {}).get("icc_profile")
+    if icc:
+        out.info["icc_profile"] = base64.b64decode(icc)
+    return out
 
 
 def write_json(doc, path):

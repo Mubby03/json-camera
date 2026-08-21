@@ -229,8 +229,11 @@ async def api_compress(
     rec = codec.decode_dict(model, doc, device="cpu")
     decode_seconds = time.time() - t0
 
-    img.save(slot / "original.png")
-    rec.save(slot / "decoded.png")
+    # Write the profile back out, or the browser paints these numbers as sRGB
+    # and the reconstruction looks colour-shifted against its own original.
+    icc = rec.info.get("icc_profile")
+    img.save(slot / "original.png", icc_profile=icc)
+    rec.save(slot / "decoded.png", icc_profile=icc)
 
     stats = codec.stats(doc, json_path)
     quality = psnr(img, rec)
@@ -268,7 +271,7 @@ async def api_compress(
     if str(compare).lower() in ("1", "true", "yes", "on"):
         jq, jn, jbytes = jpeg_at_size(img, stats["json_bytes"])
         jrec = Image.open(io.BytesIO(jbytes)).convert("RGB")
-        jrec.save(slot / "jpeg.png")
+        jrec.save(slot / "jpeg.png", icc_profile=icc)
         (slot / "jpeg.jpg").write_bytes(jbytes)
         jm = ms_ssim(img, jrec)
         payload["jpeg"] = {
@@ -313,7 +316,7 @@ async def api_decompress(file: UploadFile = File(...), model_id: str = Form(None
     decode_seconds = time.time() - t0
 
     slot = new_slot()
-    img.save(slot / "decoded.png")
+    img.save(slot / "decoded.png", icc_profile=img.info.get("icc_profile"))
     # The name the picture went in with, not the name of the .json it arrived as.
     stored = (doc.get("image") or {}).get("name")
     stem = safe_stem(stored or file.filename)
