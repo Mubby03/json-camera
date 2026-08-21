@@ -101,6 +101,33 @@ python3 -m venv .venv
 .venv/bin/jsoncam eval photo.jpg
 ```
 
+## Lossless mode
+
+The codec above buys its ratio by discarding detail. When that is not acceptable:
+
+```bash
+.venv/bin/jsoncam encode photo.png --lossless -o photo.json
+.venv/bin/jsoncam decode photo.json          # detects the format itself
+```
+
+No network is involved and no checkpoint is needed, which also means the file is
+self contained rather than tied to a set of weights. Three reversible steps:
+YCoCg-R colour decorrelation, the MED predictor from JPEG-LS, then rANS over the
+prediction errors with a table measured from the image itself.
+
+Decoding looks strictly sequential, since each pixel needs its neighbours
+rebuilt first, and three million sequential Python iterations is not a codec.
+But MED only ever looks left and up, so every pixel on an anti-diagonal depends
+solely on earlier diagonals and a whole diagonal resolves in one vectorised
+step: 3,575 array operations instead of 3.1 million scalar ones.
+
+Measured on DIV2K, bit for bit exact: 3.98 MB against PNG's 4.94 MB, about 20%
+smaller. Two things worth saying plainly. The JSON armour costs 25%, which
+cancels that win almost exactly, so as a `.json` file it lands level with PNG.
+And it loses on synthetic content: PNG runs filtered rows through zlib and finds
+exact repeats, beating this by about half on a sine pattern. This is a
+photograph coder with no match model.
+
 ## What the file looks like
 
 ```json

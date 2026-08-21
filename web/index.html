@@ -40,6 +40,12 @@
       that counts the output file size in bits, so it learned what to keep and what
       to throw away by being scored on the answer.
     </p>
+    <p class="lead">
+      There are two modes. <strong style="color:var(--text)">Lossy</strong> uses that network and
+      reaches about 60x, by deciding what to throw away.
+      <strong style="color:var(--text)">Lossless</strong> throws away nothing at all: no network,
+      just prediction and exact arithmetic, and the picture returns bit for bit.
+    </p>
     <div class="hero-actions">
       <a class="btn" href="/compress">Compress an image</a>
       <a class="btn btn-ghost" href="/decompress">Decompress a file</a>
@@ -152,6 +158,45 @@
         <p>Text can only carry about 6.1 bits per character in base85, so the file is a quarter larger than the raw bitstream. That is the price of the container being JSON, not a flaw in the codec. Both numbers are always shown so you can see the tax.</p>
       </div>
     </div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="wrap">
+    <p class="kicker">The other mode</p>
+    <h2>Lossless, when nothing may be discarded</h2>
+    <p class="sub">
+      The network above earns its ratio by dropping detail. Sometimes that is not
+      acceptable, and then the job stops being about learning and becomes pure
+      prediction: guess each pixel from the ones already decoded, and write down
+      only where the guess was wrong.
+    </p>
+    <div class="steps">
+      <div class="step">
+        <div class="num">01</div>
+        <h3>Reversible colour</h3>
+        <p>YCoCg-R decorrelates red, green and blue using only integer adds and shifts, so it inverts exactly. Worth about 1.7 MB on a 3 megapixel photograph before anything else happens.</p>
+      </div>
+      <div class="step">
+        <div class="num">02</div>
+        <h3>Predict, then code the error</h3>
+        <p>The median edge predictor from JPEG-LS guesses each pixel from its left, up and up-left neighbours, switching behaviour at edges. Good guesses make small numbers, and small numbers cost few bits.</p>
+      </div>
+      <div class="step">
+        <div class="num">03</div>
+        <h3>Decoded on the diagonal</h3>
+        <p>Each pixel needs its neighbours rebuilt first, which sounds strictly sequential. But the predictor only looks left and up, so a whole anti-diagonal resolves at once: 3,575 steps instead of 3.1 million.</p>
+      </div>
+    </div>
+    <p class="sub" style="margin-top:34px; margin-bottom:0">
+      Measured on held out photographs the bitstream lands about 20 percent under
+      PNG, bit for bit identical, and the server checks that claim on every single
+      request rather than trusting it. Two honest caveats: wrapping it in JSON
+      costs 25 percent, which cancels the win almost exactly, so as a file it sits
+      level with PNG. And PNG wins on synthetic patterns, because zlib finds exact
+      repeats and this coder has no match model at all. It is built for
+      photographs.
+    </p>
   </div>
 </section>
 
