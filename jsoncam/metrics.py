@@ -16,23 +16,36 @@ _MS_WEIGHTS = (0.0448, 0.2856, 0.3001, 0.2363, 0.1333)
 
 
 def _gaussian_window(size=11, sigma=1.5, channels=3, device="cpu", dtype=torch.float32):
+    """The 1D kernel, shaped for a depthwise pass along one axis.
+
+    A 2D Gaussian is separable, so filtering rows then columns gives exactly the
+    same answer as one 11x11 convolution for a fraction of the work: 2n
+    multiply-adds per pixel instead of n squared.  At the default size that is
+    22 against 121, and it is the difference between MS-SSIM costing more than
+    the entire codec and costing a fraction of it.
+    """
     c = torch.arange(size, dtype=dtype, device=device) - (size - 1) / 2.0
     g = torch.exp(-(c**2) / (2 * sigma**2))
     g = g / g.sum()
-    w = g[:, None] @ g[None, :]
-    return w.expand(channels, 1, size, size).contiguous()
+    return g.expand(channels, 1, 1, size).contiguous()
+
+
+def _blur(x, win):
+    """Depthwise Gaussian blur, applied separably."""
+    C = x.shape[1]
+    pad = win.shape[-1] // 2
+    x = F.conv2d(x, win, padding=(0, pad), groups=C)
+    return F.conv2d(x, win.transpose(-1, -2), padding=(pad, 0), groups=C)
 
 
 def _ssim_maps(x, y, win, data_range):
     """Return (per-pixel SSIM, per-pixel contrast-structure) for one scale."""
-    C = x.shape[1]
-    pad = win.shape[-1] // 2
-    mu_x = F.conv2d(x, win, padding=pad, groups=C)
-    mu_y = F.conv2d(y, win, padding=pad, groups=C)
+    mu_x = _blur(x, win)
+    mu_y = _blur(y, win)
     mx2, my2, mxy = mu_x**2, mu_y**2, mu_x * mu_y
-    sx = F.conv2d(x * x, win, padding=pad, groups=C) - mx2
-    sy = F.conv2d(y * y, win, padding=pad, groups=C) - my2
-    sxy = F.conv2d(x * y, win, padding=pad, groups=C) - mxy
+    sx = _blur(x * x, win) - mx2
+    sy = _blur(y * y, win) - my2
+    sxy = _blur(x * y, win) - mxy
 
     c1 = (0.01 * data_range) ** 2
     c2 = (0.03 * data_range) ** 2

@@ -1,0 +1,51 @@
+# json-camera on Fly.
+#
+#   fly deploy
+#
+# Sizing is set rather than defaulted. Peak resident memory was measured at
+# 1264 MB encoding and decoding a 2.8 megapixel photograph, so 512 MB (the size
+# of the other apps on this account) would be killed by the OOM reaper mid
+# request. 2 GB leaves real headroom.
+#
+# The machine stops when idle and starts on the next request, so an app nobody
+# is looking at costs nothing but the reserved IP. The price is a cold start of
+# roughly half a minute while torch loads.
+
+app = "json-camera"
+primary_region = "jnb"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  HOST = "0.0.0.0"
+  JSONCAM_MODELS = "/home/user/app/checkpoints"
+  # Measured on this machine: a 0.79 MP image is about 4s of codec work and a
+  # 3.1 MP one is about 18s, which is past the point where a visitor assumes it
+  # is broken.  1600 on the long side keeps a phone photo inside a few seconds
+  # and stops one large upload from holding the machine for everyone else.
+  JSONCAM_MAX_SIDE = "1600"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  # Encoding holds the CPU for seconds at a time, so let concurrency stay low
+  # and let Fly start another machine rather than queueing everyone behind one.
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 2
+    hard_limit = 4
+
+# performance-1x, not shared. Measured on shared-cpu-1x: 56s just to import
+# torch and 6.2s to encode a 0.2 megapixel image, roughly 85x slower than a
+# laptop core, which made the proxy give up with a 502 before anything came
+# back. A shared vCPU is a fraction of a core, and this workload wants a whole
+# one. performance-1x includes the 2 GB the measured 1264 MB peak needs.
+[[vm]]
+  size = "performance-1x"

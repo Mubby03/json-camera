@@ -41,7 +41,9 @@ MAX_UPLOAD = int(os.environ.get("JSONCAM_MAX_UPLOAD", str(40 * 1024 * 1024)))
 STORE = Path(tempfile.mkdtemp(prefix="jsoncam-web-"))
 STORE_TTL = 3600
 
-torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
+# Use the whole machine. Requests are already serialised by the concurrency
+# limit in front of this, so holding cores back only makes each one slower.
+torch.set_num_threads(max(1, os.cpu_count() or 1))
 
 app = FastAPI(title="json-camera", docs_url=None, redoc_url=None)
 _models = {}

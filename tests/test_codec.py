@@ -12,6 +12,7 @@ from PIL import Image
 
 from jsoncam import codec, rans
 from jsoncam.entropy import _to_integer_freqs
+from jsoncam.metrics import _blur, _gaussian_window, ms_ssim
 from jsoncam.model import JSONCamera, rate_distortion_loss
 
 
@@ -131,3 +132,39 @@ def test_rate_term_is_differentiable():
     # The entropy model must actually receive gradient -- if it does not, the
     # rate term is decorative and the model is not optimising file size.
     assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in m.prior.parameters())
+
+
+def test_separable_blur_matches_the_2d_window():
+    """MS-SSIM filters separably for speed; it must still be the same filter.
+
+    A 2D Gaussian is separable, so two 1D passes are mathematically identical to
+    one 11x11 convolution.  This pins that down, because a drift here would move
+    every quality number the project reports without anything failing.
+    """
+    import torch.nn.functional as F
+
+    def two_dimensional(x, size=11, sigma=1.5):
+        c = torch.arange(size, dtype=torch.float32) - (size - 1) / 2.0
+        g = torch.exp(-(c**2) / (2 * sigma**2))
+        g = g / g.sum()
+        win = (g[:, None] @ g[None, :]).expand(x.shape[1], 1, size, size).contiguous()
+        return F.conv2d(x, win, padding=size // 2, groups=x.shape[1])
+
+    torch.manual_seed(0)
+    for shape in [(1, 3, 64, 64), (1, 3, 97, 131)]:
+        x = torch.rand(*shape)
+        separable = _blur(x, _gaussian_window(channels=shape[1]))
+        assert torch.allclose(separable, two_dimensional(x), atol=1e-5)
+
+
+def test_ms_ssim_bounds_and_ordering():
+    torch.manual_seed(0)
+    x = torch.rand(1, 3, 128, 160)
+    slightly_off = (x + 0.02 * torch.randn_like(x)).clamp(0, 1)
+    very_off = torch.rand_like(x)
+
+    assert ms_ssim(x, x) == pytest.approx(1.0, abs=1e-6)
+    assert ms_ssim(x, slightly_off) > ms_ssim(x, very_off)
+    assert 0.0 <= ms_ssim(x, very_off) <= 1.0
+    # Small images must fall back to fewer scales rather than crashing.
+    assert 0.0 <= ms_ssim(x[:, :, :48, :48], x[:, :, :48, :48]) <= 1.0

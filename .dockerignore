@@ -1,0 +1,24 @@
+# Docker uploads the build context before it reads the Dockerfile, so anything
+# not excluded here is sent to the builder. The working tree carries about 11 GB
+# of training data and fat checkpoints that the image does not need.
+.git
+.venv
+__pycache__
+*.pyc
+*.egg-info
+.pytest_cache
+
+data
+out
+monitor
+tests
+scripts
+node_modules
+
+# Only checkpoints/stable is copied by the Dockerfile.
+checkpoints/*
+!checkpoints/stable
+
+.DS_Store
+*.md
+!web/README.md
