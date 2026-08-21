@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
 
-from jsoncam import codec
+from jsoncam import codec, lossless
 from jsoncam.metrics import from_images as ms_ssim, ms_ssim_db
 
 HERE = Path(__file__).resolve().parent
@@ -191,6 +191,7 @@ async def api_compress(
     model_id: str = Form(None),
     encoding: str = Form("b85"),
     compare: str = Form("true"),
+    mode: str = Form("lossy"),
 ):
     raw = await file.read()
     if not raw:
@@ -211,9 +212,12 @@ async def api_compress(
         img = img.resize(size, Image.LANCZOS)
         note = f"Resized to {size[0]} by {size[1]}. This demo caps the long side at {MAX_SIDE} pixels."
 
+    stem = safe_stem(file.filename)
+    if str(mode).lower() == "lossless":
+        return _compress_lossless(file, img, raw, stem, note)
+
     model_id = model_id or default_model_id()
     model = load_model(model_id)
-    stem = safe_stem(file.filename)
 
     t0 = time.time()
     doc = codec.encode_image(model, img, encoding=encoding, device="cpu",
@@ -283,6 +287,54 @@ async def api_compress(
     return payload
 
 
+def _compress_lossless(file, img, raw, stem, note):
+    """Nothing discarded. No model involved, and no quality number to report:
+    the reconstruction is the original, so PSNR is infinite by construction."""
+    t0 = time.time()
+    doc = lossless.encode_image(img, name=Path(file.filename or "image").name)
+    encode_seconds = time.time() - t0
+
+    slot = new_slot()
+    json_path = slot / "payload.json"
+    codec.write_json(doc, json_path)
+
+    t0 = time.time()
+    rec = lossless.decode_dict(doc)
+    decode_seconds = time.time() - t0
+
+    # Verify rather than assert. A lossless codec that is quietly lossy is worse
+    # than no lossless codec, so the claim is checked on every single request.
+    import numpy as np
+
+    exact = np.array_equal(np.asarray(img), np.asarray(rec))
+
+    icc = rec.info.get("icc_profile")
+    img.save(slot / "original.png", icc_profile=icc)
+    rec.save(slot / "decoded.png", icc_profile=icc)
+
+    st = lossless.stats(doc, json_path)
+    png_buf, webp_buf = io.BytesIO(), io.BytesIO()
+    img.save(png_buf, "PNG", optimize=True)
+    img.save(webp_buf, "WEBP", lossless=True, quality=100)
+
+    (slot / "meta.json").write_text(json.dumps({"json_name": f"{stem}.json"}))
+    return {
+        "id": slot.name, "note": note, "lossless": True, "bit_exact": exact,
+        "original_name": Path(file.filename or "image").name,
+        "json_name": f"{stem}.json",
+        "width": img.width, "height": img.height,
+        "source_bytes": len(raw), "raw_bytes": st["raw_bytes"],
+        "bitstream_bytes": st["bitstream_bytes"], "json_bytes": st["json_bytes"],
+        "bpp": st["bpp"], "ratio_vs_raw": st["ratio_vs_raw_json"],
+        "png_bytes": png_buf.tell(), "webp_bytes": webp_buf.tell(),
+        "encode_seconds": encode_seconds, "decode_seconds": decode_seconds,
+        "header": {k: v for k, v in doc.items() if k not in ("payload", "codec")},
+        "payload_preview": doc["payload"]["data"][:220],
+        "payload_chars": len(doc["payload"]["data"]),
+        "jpeg": None, "psnr": None, "ms_ssim": None,
+    }
+
+
 @app.post("/api/decompress")
 async def api_decompress(file: UploadFile = File(...), model_id: str = Form(None)):
     raw = await file.read()
@@ -294,7 +346,11 @@ async def api_decompress(file: UploadFile = File(...), model_id: str = Form(None
         doc = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise HTTPException(415, "that is not a JSON file we can read")
-    if not isinstance(doc, dict) or doc.get("format") != "json-camera/1":
+    if not isinstance(doc, dict):
+        raise HTTPException(415, "that JSON is not a json-camera file")
+    if doc.get("format") == lossless.FORMAT:
+        return _decompress_lossless(doc, raw, file)
+    if doc.get("format") != "json-camera/1":
         raise HTTPException(415, "that JSON is not a json-camera file")
 
     wanted = doc.get("model", {}).get("fingerprint")
@@ -337,6 +393,33 @@ async def api_decompress(file: UploadFile = File(...), model_id: str = Form(None
         "decode_seconds": decode_seconds,
         "latent": doc.get("latent"),
         "header": {k: v for k, v in doc.items() if k != "payload"},
+    }
+
+
+def _decompress_lossless(doc, raw, file):
+    t0 = time.time()
+    try:
+        img = lossless.decode_dict(doc)
+    except (ValueError, KeyError) as error:
+        raise HTTPException(422, f"that file is damaged: {error}")
+    decode_seconds = time.time() - t0
+
+    slot = new_slot()
+    img.save(slot / "decoded.png", icc_profile=img.info.get("icc_profile"))
+    stored = (doc.get("image") or {}).get("name")
+    png_name = f"{safe_stem(stored or file.filename)}.png"
+    (slot / "meta.json").write_text(json.dumps({"png_name": png_name}))
+
+    return {
+        "id": slot.name, "lossless": True,
+        "original_name": stored, "png_name": png_name,
+        "width": img.width, "height": img.height,
+        "created": doc.get("created"),
+        "bitstream_bytes": doc["codec"]["bitstream_bytes"],
+        "json_bytes": len(raw),
+        "fingerprint": None, "model": "none needed, this format carries no weights",
+        "decode_seconds": decode_seconds, "latent": None,
+        "header": {k: v for k, v in doc.items() if k not in ("payload", "codec")},
     }
 
 

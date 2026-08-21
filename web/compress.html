@@ -28,8 +28,9 @@
     <h1>Compress</h1>
     <p>
       Drop in a photograph. It comes back as a JSON file named after your original,
-      with the full accounting of where every byte went and an honest comparison
-      against JPEG at the same size.
+      with the full accounting of where every byte went. Lossy uses the trained
+      network and is scored against JPEG at a matched size. Lossless discards
+      nothing and is scored against PNG.
     </p>
   </div>
 </header>
@@ -52,12 +53,23 @@
         </div>
 
         <div class="field">
+          <label>Mode</label>
+          <div class="segment">
+            <label><input type="radio" name="mode" value="lossy" checked><span>Lossy</span></label>
+            <label><input type="radio" name="mode" value="lossless"><span>Lossless</span></label>
+          </div>
+          <p class="hint" id="mode-hint">Lossy uses the trained network and reaches about 60x, by deciding what to discard. Lossless discards nothing and comes back bit for bit, at roughly 20 percent under PNG.</p>
+        </div>
+
+        <div class="field" id="lossy-only">
           <label for="model">Model, which is the quality level</label>
           <select id="model"></select>
           <p class="hint" id="model-hint">Lambda is the quality knob. Higher means a better picture and a bigger file.</p>
         </div>
 
-        <div class="field">
+        </div>
+
+        <div class="field" id="lossy-only-2">
           <label>Text encoding</label>
           <div class="segment">
             <label><input type="radio" name="enc" value="b85" checked><span>b85 &nbsp;+25%</span></label>
@@ -66,12 +78,16 @@
           <p class="hint">Base85 fits about 6.1 bits per character, base64 fits 6. This is the cost of the container being text.</p>
         </div>
 
-        <div class="field">
+        </div>
+
+        <div class="field" id="lossy-only-3">
           <label class="check">
             <input type="checkbox" id="compare" checked>
             <span>Compare against JPEG at the same file size</span>
           </label>
           <p class="hint">JPEG quality is binary searched until it lands on your file size, so neither codec gets a favourable operating point.</p>
+        </div>
+
         </div>
 
         <div class="field">
@@ -117,6 +133,14 @@
 
   JC.fillModels(document.getElementById('model'), document.getElementById('model-hint'));
 
+  const lossyOnly = ['lossy-only','lossy-only-2','lossy-only-3'].map((i) => document.getElementById(i));
+  const modeOf = () => form.querySelector('input[name=mode]:checked').value;
+  form.querySelectorAll('input[name=mode]').forEach((r) => r.addEventListener('change', () => {
+    const lossless = modeOf() === 'lossless';
+    lossyOnly.forEach((el) => { if (el) el.hidden = lossless; });
+    go.textContent = lossless ? 'Compress losslessly' : 'Compress';
+  }));
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!picked) return;
@@ -126,9 +150,12 @@
     body.append('model_id', document.getElementById('model').value);
     body.append('encoding', form.querySelector('input[name=enc]:checked').value);
     body.append('compare', document.getElementById('compare').checked ? 'true' : 'false');
+    body.append('mode', modeOf());
 
     go.disabled = true;
-    JC.busy(out, 'Encoding, then decoding it back to check the quality. A large photograph takes a few seconds.');
+    JC.busy(out, modeOf() === 'lossless'
+      ? 'Predicting every pixel from its neighbours and coding the errors exactly. Then decoding it back to prove nothing was lost.'
+      : 'Encoding, then decoding it back to check the quality. A large photograph takes a few seconds.');
 
     try {
       const r = await JC.post('/api/compress', body);
@@ -141,6 +168,7 @@
   });
 
   function render(r) {
+    if (r.lossless) return renderLossless(r);
     const p = (n, d) => n == null ? '-' : n.toFixed(d);
     const dPSNR = r.jpeg && r.psnr != null && r.jpeg.psnr != null ? r.psnr - r.jpeg.psnr : null;
     const dMS   = r.jpeg ? r.ms_ssim_db - r.jpeg.ms_ssim_db : null;
@@ -244,6 +272,78 @@
           </p>
           <a class="btn" href="/api/download/${r.id}" download>Download the JSON file</a>
           <p class="hint">Keep the model note: this file needs checkpoint <span class="mono">${JC.esc(r.model.fingerprint)}</span> to open.</p>
+        </div>
+      </div>`;
+
+    out.innerHTML = html;
+    out.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function renderLossless(r) {
+    const pct = (a, b) => `${(100 * (1 - a / b)).toFixed(0)}%`;
+    let html = '';
+    if (r.note) html += `<div class="info">${JC.esc(r.note)}</div>`;
+
+    html += r.bit_exact
+      ? `<div class="info"><strong style="color:var(--accent)">Verified bit for bit.</strong>
+           Every one of the ${(r.width * r.height * 3).toLocaleString()} values came back identical.
+           This is checked on the server for every request, not assumed.</div>`
+      : `<div class="alert"><b>Reconstruction did not match.</b>This is a bug. Please report it.</div>`;
+
+    html += `
+      <div class="panel">
+        <div class="panel-hd">
+          <span>${JC.esc(r.original_name)} &nbsp;&middot;&nbsp; ${r.width} by ${r.height}</span>
+          <span>${JC.bytes(r.raw_bytes)} raw RGB</span>
+        </div>
+        <div class="compare">
+          <div class="shot"><div class="cap"><span>Original</span><span>${JC.bytes(r.source_bytes)}</span></div>
+            <img src="/api/preview/${r.id}/original" alt="The original image"></div>
+          <div class="shot"><div class="cap"><span>Rebuilt from the JSON</span><b>identical</b></div>
+            <img src="/api/preview/${r.id}/decoded" alt="The image rebuilt exactly"></div>
+        </div>
+      </div>
+
+      <div class="grid-4">
+        <div class="cellstat"><div class="k">Bitstream</div><div class="v good">${JC.bytes(r.bitstream_bytes)}</div><div class="s">${r.bpp.toFixed(2)} bits per pixel</div></div>
+        <div class="cellstat"><div class="k">vs PNG</div><div class="v">${pct(r.bitstream_bytes, r.png_bytes)}</div><div class="s">smaller, PNG is ${JC.bytes(r.png_bytes)}</div></div>
+        <div class="cellstat"><div class="k">Quality</div><div class="v good">exact</div><div class="s">no loss at all</div></div>
+        <div class="cellstat"><div class="k">Time</div><div class="v">${r.encode_seconds.toFixed(1)}s</div><div class="s">${r.decode_seconds.toFixed(1)}s to decode</div></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-hd">Against the other lossless formats</div>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Format</th><th style="text-align:right">Size</th><th style="text-align:right">Loss</th></tr></thead>
+          <tbody>
+            <tr class="hi"><td>json-camera, bitstream</td><td class="n">${JC.bytes(r.bitstream_bytes)}</td><td class="n">none</td></tr>
+            <tr><td>PNG</td><td class="n">${JC.bytes(r.png_bytes)}</td><td class="n">none</td></tr>
+            <tr><td>WebP lossless</td><td class="n">${JC.bytes(r.webp_bytes)}</td><td class="n">none</td></tr>
+            <tr><td>json-camera, as a .json file</td><td class="n">${JC.bytes(r.json_bytes)}</td><td class="n">none</td></tr>
+          </tbody>
+        </table></div>
+        <div class="panel-bd" style="border-top:1px solid var(--line); color:var(--muted); font-size:14.5px">
+          The bitstream is ${pct(r.bitstream_bytes, r.png_bytes)} smaller than PNG. Wrapping it in JSON
+          costs 25 percent, which cancels that win almost exactly. That is the price of the container
+          being text, and it is the honest number rather than the flattering one.
+        </div>
+      </div>
+
+      <details class="disclose">
+        <summary>Peek inside the JSON</summary>
+        <div class="inner"><pre class="code">${JC.esc(JSON.stringify(r.header, null, 2))}
+
+<span class="s">"payload"</span>: { <span class="s">"data"</span>: "${JC.esc(r.payload_preview)}&hellip;" <span class="s">// ${r.payload_chars.toLocaleString()} chars</span> }</pre></div>
+      </details>
+
+      <div class="panel">
+        <div class="panel-hd">Download</div>
+        <div class="panel-bd">
+          <p style="margin:0 0 18px; color:var(--muted); font-size:14.5px">
+            Saved as <strong class="mono" style="color:var(--text)">${JC.esc(r.json_name)}</strong>.
+            Unlike the lossy format this one needs no model to open, because it carries no weights:
+            the file is self contained.
+          </p>
+          <a class="btn" href="/api/download/${r.id}" download>Download the JSON file</a>
         </div>
       </div>`;
 

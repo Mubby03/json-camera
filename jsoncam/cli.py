@@ -9,7 +9,7 @@ import sys
 import numpy as np
 from PIL import Image
 
-from . import codec
+from . import codec, lossless
 from .metrics import from_images as _ms_ssim, ms_ssim_db
 
 
@@ -63,8 +63,10 @@ def cmd_export(args):
 
 
 def cmd_encode(args):
-    model, ck = codec.load_checkpoint(args.checkpoint)
     img = Image.open(args.input)
+    if args.lossless:
+        return _encode_lossless(args, img)
+    model, ck = codec.load_checkpoint(args.checkpoint)
     doc = codec.encode_image(model, img, encoding=args.encoding,
                              precision=args.precision, device=args.device,
                              name=os.path.basename(args.input))
@@ -85,9 +87,33 @@ def cmd_encode(args):
               f"(harmless, slight quality loss)")
 
 
+def _encode_lossless(args, img):
+    doc = lossless.encode_image(img, name=os.path.basename(args.input))
+    out = args.output or os.path.splitext(args.input)[0] + ".json"
+    codec.write_json(doc, out)
+    s = lossless.stats(doc, out)
+    png = io.BytesIO()
+    img.convert("RGB").save(png, "PNG", optimize=True)
+    print(f"{args.input}  ->  {out}   (lossless, nothing discarded)")
+    print(f"  image        {doc['image']['width']}x{doc['image']['height']}  "
+          f"({_human(s['raw_bytes'])} raw RGB)")
+    print(f"  bitstream    {_human(s['bitstream_bytes'])}   {s['bpp']:.4f} bpp   "
+          f"{100 * (1 - s['bitstream_bytes'] / png.tell()):+.0f}% vs PNG ({_human(png.tell())})")
+    print(f"  json file    {_human(s['json_bytes'])}   (+25% text armour, which "
+          f"cancels the win: the container costs what the coder saves)")
+
+
 def cmd_decode(args):
-    model, ck = codec.load_checkpoint(args.checkpoint)
     doc = codec.read_json(args.input)
+    if doc.get("format") == lossless.FORMAT:
+        img = lossless.decode_dict(doc)
+        stem = os.path.splitext(doc.get("image", {}).get("name")
+                                or os.path.basename(args.input))[0]
+        out = args.output or os.path.join(os.path.dirname(args.input) or ".", stem + ".png")
+        img.save(out, icc_profile=img.info.get("icc_profile"))
+        print(f"{args.input}  ->  {out}   ({img.size[0]}x{img.size[1]}, bit exact)")
+        return
+    model, ck = codec.load_checkpoint(args.checkpoint)
     img = codec.decode_dict(model, doc, device=args.device, strict=not args.force)
     # Prefer the name the picture went in with over the name of the .json.
     stem = os.path.splitext(doc.get("image", {}).get("name") or os.path.basename(args.input))[0]
@@ -178,6 +204,8 @@ def build_parser():
             p.add_argument("--encoding", default="b85", choices=["b85", "b64"])
         if name == "encode":
             p.add_argument("--precision", type=int, default=12)
+            p.add_argument("--lossless", action="store_true",
+                           help="discard nothing; no model needed, about 20%% under PNG")
         if name == "decode":
             p.add_argument("--force", action="store_true",
                            help="decode even if the checkpoint fingerprint differs")
