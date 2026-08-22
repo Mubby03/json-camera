@@ -48,18 +48,34 @@ a general-purpose compressor does well on the output; this one is scored on the
 bytes. `lambda` is the quality knob and the only difference between a small file
 and a large one.
 
-**Measured results (v1, lambda 0.0067), 12 held-out DIV2K photographs, JPEG
-size-matched per image via binary search:**
+**Two models ship, at different points on the rate-distortion curve. Both were
+benchmarked on 12 held-out DIV2K photographs with JPEG size-matched per image via
+binary search.**
+
+*Small model (lambda 0.0067), mean 0.31 bpp:*
 
 | | json-camera | JPEG | delta |
 |---|---|---|---|
 | PSNR | 29.63 dB | 27.42 dB | **+2.21 dB** |
 | MS-SSIM | 14.33 dB | 10.86 dB | **+3.46 dB** |
 
-**Won 12 of 12 images on both metrics**, at a mean 0.314 bits per pixel. Range
-was +0.10 to +3.69 dB — weakest on dense detail, strongest on smooth scenes.
-Matched size is the important part: JPEG quality is binary-searched to land on
-the same byte count, so neither codec gets a flattering operating point.
+**Won 12 of 12 images on both metrics.** Range +0.10 to +3.69 dB — weakest on
+dense detail, strongest on smooth scenes.
+
+*Sharp model (lambda 0.05), mean 1.03 bpp:* 32.84 dB against JPEG's 33.92, so
+**−1.08 dB and only 2 wins of 12.** Absolute quality is 2.7 dB better than the
+small model (29.43 dB held-out against 26.76), but it loses the comparison.
+
+**This is the honest and more interesting result.** Learned codecs beat JPEG
+hardest at low bitrate, where JPEG collapses into blocks. Around 1 bpp JPEG is in
+its comfort zone, and a 2M-parameter model trained for three hours on 800 images
+does not keep up. Turning up quality made a better picture and a worse codec.
+Both ship, and the picker names the cost of each.
+
+Matched size is the load-bearing part of the methodology: JPEG quality is
+binary-searched to land on the same byte count, so neither codec gets a
+flattering operating point. That is also why the second result could not be
+hidden.
 
 ### 2.2 Lossless codec (no network at all)
 

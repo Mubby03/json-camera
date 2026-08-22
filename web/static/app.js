@@ -84,12 +84,9 @@ const JC = (function () {
       for (const m of data.models) {
         const o = document.createElement('option');
         o.value = m.id;
-        const bits = [];
-        if (m.lmbda) bits.push('lambda ' + m.lmbda);
-        // Held out figures, which is what the server sends when it has them.
-        if (m.bpp) bits.push(m.bpp.toFixed(2) + ' bpp');
-        if (m.psnr) bits.push(m.psnr.toFixed(1) + ' dB');
-        o.textContent = m.label + (bits.length ? '  (' + bits.join(', ') + ')' : '');
+        // The server already builds a full label from the held-out figures;
+        // repeating them here would print each number twice.
+        o.textContent = m.label + (m.lmbda ? `  (lambda ${m.lmbda})` : '');
         select.append(o);
       }
       if (hint && data.max_side) {
