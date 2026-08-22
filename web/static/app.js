@@ -93,8 +93,13 @@ const JC = (function () {
         select.append(o);
       }
       if (hint && data.max_side) {
-        hint.textContent = 'Lambda is the quality knob. Higher means a better picture and a bigger file. '
-          + 'Images wider or taller than ' + data.max_side.toLocaleString() + ' pixels are scaled down first.';
+        hint.textContent = data.models.length > 1
+          ? 'One model per quality level, which is what lambda buys. The small one beats '
+            + 'JPEG at a matched file size; the sharp one looks better but no longer does, '
+            + 'because JPEG is strong at higher bitrates. Images over '
+            + data.max_side.toLocaleString() + ' pixels are scaled down first.'
+          : 'Lambda is the quality knob. Higher means a better picture and a bigger file. '
+            + 'Images wider or taller than ' + data.max_side.toLocaleString() + ' pixels are scaled down first.';
       }
     } catch (_) {
       select.innerHTML = '<option>Could not reach the server</option>';

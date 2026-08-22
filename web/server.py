@@ -83,7 +83,25 @@ def discover_models():
             "psnr": psnr,
             "label": path.stem,
         })
-    found.sort(key=lambda m: -(m["lmbda"] or 0))
+    found.sort(key=lambda m: (m["bpp"] or 0))
+
+    # Describe each model by what it actually does, not by its filename. With
+    # more than one on the curve the honest framing is the trade between them:
+    # the cheapest genuinely beats JPEG at a matched size, the dearest looks
+    # better but no longer does. Saying only the flattering half would be a lie
+    # of omission on whichever model was left out.
+    if len(found) > 1:
+        found[0]["note"] = "smallest files, beats JPEG at matched size"
+        found[-1]["note"] = "sharpest picture, larger files"
+    for m in found:
+        bits = []
+        if m["bpp"]:
+            bits.append(f"{m['bpp']:.2f} bpp")
+        if m["psnr"]:
+            bits.append(f"{m['psnr']:.1f} dB")
+        if m.get("note"):
+            bits.append(m["note"])
+        m["label"] = " · ".join(bits) or m["id"]
     return found
 
 
