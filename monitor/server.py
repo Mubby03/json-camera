@@ -49,6 +49,8 @@ BEST = re.compile(r"new best \((?P<basis>train|val) loss (?P<loss>[-\d.]+)\)")
 HEADER_TRAIN = re.compile(r"^(?P<patches>\d+) patches,\s*(?P<steps>\d+) steps/epoch")
 HEADER_VAL = re.compile(r"^(?P<patches>\d+) held-out patches")
 DEVICE = re.compile(r"^device:\s*(?P<device>\S+)")
+# `config: lmbda=0.05 hidden=96 ...` written by the trainer at startup.
+CONFIG = re.compile(r"^config:\s*(?P<pairs>.+)$")
 # Long-option pairs out of run_training.sh, e.g. `--lmbda 0.0067`.
 SH_ARG = re.compile(r"--(?P<key>[a-z-]+)\s+(?P<value>[\w.\-/]+)")
 
@@ -96,6 +98,13 @@ def parse_log(text):
         found = DEVICE.match(line)
         if found:
             header["device"] = found["device"]
+            continue
+        found = CONFIG.match(line)
+        if found:
+            for pair in found["pairs"].split():
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    header[k] = v
             continue
 
         found = EPOCH.match(line)
@@ -242,7 +251,16 @@ def build_status(repo, log_path=None):
         return status
 
     rows, current, header = parse_log(read_log(log))
-    config = read_run_config(repo / "scripts" / "run_training.sh")
+    # The log is the authority. The shell script is only a fallback, and a
+    # misleading one: it describes the last run someone launched with it, which
+    # need not be this one. When it is all we have, label it as inferred rather
+    # than presenting someone else's lambda as this run's.
+    config = {}
+    if "lmbda" not in header:
+        for k, v in read_run_config(repo / "scripts" / "run_training.sh").items():
+            config[k] = v
+        if config:
+            config["_inferred"] = "from scripts/run_training.sh, may not match this run"
     config.update({k: v for k, v in header.items() if v is not None})
 
     total = int(config.get("epochs_total") or config.get("epochs") or 0)

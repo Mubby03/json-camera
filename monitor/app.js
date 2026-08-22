@@ -398,6 +398,7 @@ function renderConfig(s) {
     ['train patches', cfg.train_patches ? Number(cfg.train_patches).toLocaleString() : null],
     ['held-out patches', cfg.val_patches ? Number(cfg.val_patches).toLocaleString() : null],
     ['best epoch so far', s.best],
+    ['config source', cfg._inferred ? 'INFERRED: ' + cfg._inferred : 'the run log itself'],
     ['log', s.log],
   ].filter(([, v]) => v != null && v !== '');
   $('config').innerHTML = pairs

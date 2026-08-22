@@ -73,6 +73,11 @@ def main(argv=None):
 
     device = pick_device(args.device)
     print(f"device: {device}")
+    # Emit the run's own configuration. Anything reading this log later, the
+    # monitor included, should learn what was run from the run itself rather
+    # than from a script that may have moved on.
+    print(f"config: lmbda={args.lmbda} hidden={args.hidden} latent={args.latent} "
+          f"batch={args.batch} lr={args.lr} epochs={args.epochs} out={args.out}")
 
     ds = PatchDataset(args.cache)
     dl = DataLoader(ds, batch_size=args.batch, shuffle=True, num_workers=args.workers,
