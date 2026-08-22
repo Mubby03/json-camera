@@ -38,5 +38,11 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["jsoncam"]
 
+# The models ship with the package. Without them `pip install jsoncam` gives you
+# a library that raises on its first call, since a learned codec is useless
+# without the weights that define its format.
+[tool.setuptools.package-data]
+jsoncam = ["models/*.pt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

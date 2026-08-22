@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>json-camera | a photograph, stored as text</title>
-<meta name="description" content="A neural network that compresses photographs into JSON files, and gets them back out again. Beats JPEG at the same file size.">
+<meta name="description" content="A learned image codec that stores photographs as JSON. Use it in the browser, or pip install it and train models 9x faster on its latents. Runs entirely on your machine.">
 <meta property="og:title" content="json-camera">
-<meta property="og:description" content="A neural network that compresses photographs into JSON files, and gets them back out again.">
+<meta property="og:description" content="A learned image codec that stores photographs as JSON, and a library that trains models 9x faster on its output.">
 <meta property="og:type" content="website">
 <meta name="theme-color" content="#0B0B0D">
 <link rel="stylesheet" href="/static/style.css">
@@ -18,6 +18,7 @@
   <div class="nav-in">
     <a class="brand" href="/">JSON<b>CAMERA</b></a>
     <div class="nav-links">
+      <a href="#start">Get started</a>
       <a href="#how">How it works</a>
       <a href="/compress">Compress</a>
       <a href="/decompress">Decompress</a>
@@ -36,19 +37,14 @@
       reads that file and rebuilds the photograph.
     </p>
     <p class="lead">
-      Nothing about the transform is hand designed. It was trained against a loss
-      that counts the output file size in bits, so it learned what to keep and what
-      to throw away by being scored on the answer.
-    </p>
-    <p class="lead">
-      There are two modes. <strong style="color:var(--text)">Lossy</strong> uses that network and
-      reaches about 60x, by deciding what to throw away.
-      <strong style="color:var(--text)">Lossless</strong> throws away nothing at all: no network,
-      just prediction and exact arithmetic, and the picture returns bit for bit.
+      Drop an image in and watch it happen, or install it and build on it. Two modes:
+      <strong style="color:var(--text)">lossy</strong> reaches about 60x by deciding what to
+      discard, <strong style="color:var(--text)">lossless</strong> discards nothing and returns
+      the picture bit for bit.
     </p>
     <div class="hero-actions">
-      <a class="btn" href="/compress">Compress an image</a>
-      <a class="btn btn-ghost" href="/decompress">Decompress a file</a>
+      <a class="btn" href="/compress">Try it in your browser</a>
+      <a class="btn btn-ghost" href="#developers">Install the library</a>
     </div>
   </div>
 </header>
@@ -64,17 +60,155 @@
       <div class="t">better than JPEG at a matched file size</div>
     </div>
     <div class="band-cell">
-      <div class="n">12 / 12</div>
-      <div class="t">held out photographs where it beat JPEG</div>
+      <div class="n">9.2&times;</div>
+      <div class="t">faster model training on latents than on pixels</div>
     </div>
     <div class="band-cell">
-      <div class="n">0.35 s</div>
-      <div class="t">to rebuild a 2 megapixel image on a laptop CPU</div>
+      <div class="n">0 KB</div>
+      <div class="t">leaves your machine. it all runs locally</div>
     </div>
   </div>
 </section>
 
-<section class="section" id="how">
+<!-- ==================== TWO AUDIENCES ==================== -->
+<section class="section" id="start">
+  <div class="wrap">
+    <p class="kicker">Get started</p>
+    <h2>Pick the version of this you need</h2>
+    <p class="sub">
+      The same codec serves two quite different people. Choose whichever you are
+      today; nothing is hidden behind the other tab.
+    </p>
+
+    <div class="tabs" role="tablist" aria-label="Choose your path">
+      <button role="tab" id="tab-user" aria-controls="pane-user" aria-selected="true">
+        <span class="t-top">No code</span>
+        <span class="t-main">I have a photo</span>
+      </button>
+      <button role="tab" id="tab-dev" aria-controls="pane-dev" aria-selected="false">
+        <span class="t-top">Python</span>
+        <span class="t-main">I am building something</span>
+      </button>
+    </div>
+
+    <div class="panes">
+      <!-- ---------- normal users ---------- -->
+      <div id="pane-user" role="tabpanel" aria-labelledby="tab-user">
+        <div class="steps" style="margin-bottom:34px">
+          <div class="step">
+            <div class="num">01</div>
+            <h3>Drop in a photo</h3>
+            <p>Any JPEG, PNG or HEIC from your phone or camera. Nothing to sign up for, nothing to install, and the file is deleted an hour later.</p>
+          </div>
+          <div class="step">
+            <div class="num">02</div>
+            <h3>Watch what it costs</h3>
+            <p>You get the rebuilt picture beside the original, the file size, and an honest score against JPEG squeezed to exactly the same number of bytes.</p>
+          </div>
+          <div class="step">
+            <div class="num">03</div>
+            <h3>Take the file</h3>
+            <p>Download the JSON, keep it, open it in a text editor if you like. Drop it into Decompress later and your photo comes back under its original name.</p>
+          </div>
+        </div>
+        <div class="hero-actions">
+          <a class="btn" href="/compress">Compress a photo</a>
+          <a class="btn btn-ghost" href="/decompress">I have a .json to open</a>
+        </div>
+      </div>
+
+      <!-- ---------- developers ---------- -->
+      <div id="pane-dev" role="tabpanel" aria-labelledby="tab-dev" hidden>
+
+        <div class="local" style="margin-bottom:30px">
+          <div>
+            <div class="big">Runs on your machine</div>
+            <p>
+              There is no service to call and no key to get. The package is torch, numpy
+              and pillow, with <strong style="color:var(--text)">no network code anywhere in
+              it</strong> &mdash; verified by running a full encode and decode with every
+              socket blocked. Your images never leave your computer, and it works with the
+              wifi off.
+            </p>
+          </div>
+        </div>
+
+        <div class="snip" style="margin-bottom:22px">
+          <div class="snip-hd"><span>Install</span>
+            <button class="copy" data-copy="pip install git+https://github.com/Mubby03/json-camera">Copy</button></div>
+<pre>pip install git+https://github.com/Mubby03/json-camera</pre>
+        </div>
+
+        <div class="snip" style="margin-bottom:22px">
+          <div class="snip-hd"><span>Compress and rebuild</span>
+            <button class="copy" data-copy="import jsoncam&#10;&#10;doc = jsoncam.encode(&quot;photo.jpg&quot;)&#10;jsoncam.decode(doc, &quot;restored.png&quot;)&#10;&#10;doc = jsoncam.encode_lossless(&quot;photo.png&quot;)&#10;jsoncam.decode(doc, &quot;exact.png&quot;)">Copy</button></div>
+<pre><span class="k">import</span> jsoncam
+
+doc = jsoncam.encode(<span class="k">"photo.jpg"</span>)          <span class="c"># learned codec, about 60x</span>
+jsoncam.decode(doc, <span class="k">"restored.png"</span>)
+
+doc = jsoncam.encode_lossless(<span class="k">"photo.png"</span>) <span class="c"># nothing discarded</span>
+jsoncam.decode(doc, <span class="k">"exact.png"</span>)           <span class="c"># format detected for you</span></pre>
+        </div>
+
+        <div class="snip" style="margin-bottom:30px">
+          <div class="snip-hd"><span>Train on the latents instead of the pixels</span>
+            <button class="copy" data-copy="import jsoncam&#10;from torch.utils.data import DataLoader&#10;&#10;jsoncam.prepare_dataset(&quot;photos/&quot;, &quot;train.jcl&quot;, size=224)&#10;ds = jsoncam.LatentDataset(&quot;train.jcl&quot;)&#10;dl = DataLoader(ds, batch_size=64, num_workers=4, shuffle=True)">Copy</button></div>
+<pre><span class="k">import</span> jsoncam
+<span class="k">from</span> torch.utils.data <span class="k">import</span> DataLoader
+
+jsoncam.prepare_dataset(<span class="k">"photos/"</span>, <span class="k">"train.jcl"</span>, size=<span class="k">224</span>)  <span class="c"># once</span>
+ds = jsoncam.LatentDataset(<span class="k">"train.jcl"</span>)                    <span class="c"># (latent, label)</span>
+dl = DataLoader(ds, batch_size=<span class="k">64</span>, num_workers=<span class="k">4</span>, shuffle=<span class="k">True</span>)</pre>
+        </div>
+
+        <dl class="rows" style="margin-bottom:30px">
+          <div class="row2">
+            <dt>9.2&times; faster steps</dt>
+            <dd>A model does not need pixels. The latent grid is <b>128 &times; 14 &times; 14</b> against
+              <b>3 &times; 224 &times; 224</b>, six times fewer values, so every layer downstream is
+              cheaper. Measured at <b>50 img/s on pixels against 462 on latents</b>, same
+              architecture and batch.</dd>
+          </div>
+          <div class="row2">
+            <dt>6.5&times; less disk</dt>
+            <dd><b>3.1 KB</b> per image against JPEG's 20.1 KB at the same resolution. An
+              ImageNet-sized set goes from <b>22.4 GB to 3.6 GB</b>.</dd>
+          </div>
+          <div class="row2">
+            <dt>Loading is free</dt>
+            <dd>Unpacking a latent costs about 5 ms, so four workers deliver <b>~750 img/s</b>
+              while the network above consumes 462. Decoding never touches the critical path.</dd>
+          </div>
+          <div class="row2">
+            <dt>Check it yourself</dt>
+            <dd>Every number here came from <code>scripts/benchmark_latents.py</code>, which
+              runs on your machine and your data. Do not take them on trust.</dd>
+          </div>
+        </dl>
+
+        <div class="alert" style="margin-bottom:30px">
+          <b>Before you build on this, the part most pages would leave out.</b>
+          Accuracy is <strong>unmeasured</strong>. Training speed and disk are measured; whether a
+          model trained on latents is as <em>good</em> at its task is not, and that is the question
+          that decides whether it is worth using. The latent is a lossy 16&times; downsample, so fine
+          detail is gone. Augmentation largely goes with it: the finest crop is 16 pixels, colour
+          jitter is impossible, and even a horizontal flip is not exact in latent space. And because
+          the input is 128 channels at 14&times;14, no ImageNet-pretrained backbone will fit. This
+          suits training from scratch on a fixed dataset where I/O is the bottleneck. Validate it
+          on your own task before trusting it.
+        </div>
+
+        <div class="hero-actions">
+          <a class="btn" href="https://github.com/Mubby03/json-camera" target="_blank" rel="noopener">Read the source</a>
+          <a class="btn btn-ghost" href="#how">How the codec works</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section alt" id="how">
   <div class="wrap">
     <p class="kicker">The pipeline</p>
     <h2>What actually happens</h2>
@@ -118,13 +252,11 @@
   </div>
 </section>
 
-<section class="section alt">
+<section class="section">
   <div class="wrap">
     <p class="kicker">The trick</p>
     <h2>The loss function is the whole idea</h2>
-    <p class="sub">
-      Two terms, fighting each other, both differentiable.
-    </p>
+    <p class="sub">Two terms, fighting each other, both differentiable.</p>
     <pre class="code" style="font-size:15px; padding:26px"><span class="s">loss</span> = lambda &times; distortion + rate</pre>
     <p class="sub" style="margin-top:28px; margin-bottom:0">
       <strong>Rate</strong> is real bits, straight out of the entropy model in step four.
@@ -134,30 +266,10 @@
       just saving an array and hoping a generic compressor does well on it afterwards.
       <br><br>
       <strong>Lambda</strong> is the quality knob, and it is the only difference between a
-      200 KB model and a 2 MB one. One model per quality level, which is why the compressor
-      has a model picker rather than a slider.
+      small file and a large one. Two models ship: the small one beats JPEG at a matched
+      size, the sharper one looks better but no longer does, because JPEG is strong at
+      higher bitrates. The picker names the cost of each.
     </p>
-  </div>
-</section>
-
-<section class="section">
-  <div class="wrap">
-    <p class="kicker">Read this part</p>
-    <h2>Three things worth being straight about</h2>
-    <div class="notes">
-      <div class="note">
-        <h3>The weights are part of the format</h3>
-        <p>The decoder cannot rebuild anything without the exact weights that encoded it, which is why every file carries a fingerprint and decoding refuses on a mismatch. The checkpoint is a shared codebook, like the tables baked into every JPEG decoder. Send someone a file and not the model, and they get nothing.</p>
-      </div>
-      <div class="note">
-        <h3>This is compression, not encryption</h3>
-        <p>The payload looks unreadable, but there is no key and no secret. Anyone holding the checkpoint can read it. Do not use this to hide anything. If you want secrecy, encrypt the file afterwards. The two are separate jobs and mixing them makes both worse.</p>
-      </div>
-      <div class="note">
-        <h3>JSON costs 25 percent</h3>
-        <p>Text can only carry about 6.1 bits per character in base85, so the file is a quarter larger than the raw bitstream. That is the price of the container being JSON, not a flaw in the codec. Both numbers are always shown so you can see the tax.</p>
-      </div>
-    </div>
   </div>
 </section>
 
@@ -189,14 +301,34 @@
       </div>
     </div>
     <p class="sub" style="margin-top:34px; margin-bottom:0">
-      Measured on held out photographs the bitstream lands about 20 percent under
-      PNG, bit for bit identical, and the server checks that claim on every single
-      request rather than trusting it. Two honest caveats: wrapping it in JSON
-      costs 25 percent, which cancels the win almost exactly, so as a file it sits
-      level with PNG. And PNG wins on synthetic patterns, because zlib finds exact
-      repeats and this coder has no match model at all. It is built for
-      photographs.
+      The bitstream lands about 20 percent under PNG, bit for bit identical, and the
+      server checks that claim on every single request rather than trusting it. Two
+      honest caveats: wrapping it in JSON costs 25 percent, which cancels the win almost
+      exactly, so as a file it sits level with PNG. And PNG wins on synthetic patterns,
+      because zlib finds exact repeats and this coder has no match model at all. It is
+      built for photographs.
     </p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <p class="kicker">Read this part</p>
+    <h2>Three things worth being straight about</h2>
+    <div class="notes">
+      <div class="note">
+        <h3>The weights are part of the format</h3>
+        <p>The decoder cannot rebuild anything without the exact weights that encoded it, which is why every file carries a fingerprint and decoding refuses on a mismatch. The checkpoint is a shared codebook, like the tables baked into every JPEG decoder. Send someone a file and not the model, and they get nothing.</p>
+      </div>
+      <div class="note">
+        <h3>This is compression, not encryption</h3>
+        <p>The payload looks unreadable, but there is no key and no secret. Anyone holding the checkpoint can read it. Do not use this to hide anything. If you want secrecy, encrypt the file afterwards. The two are separate jobs and mixing them makes both worse.</p>
+      </div>
+      <div class="note">
+        <h3>JSON costs 25 percent</h3>
+        <p>Text can only carry about 6.1 bits per character in base85, so the file is a quarter larger than the raw bitstream. That is the price of the container being JSON, not a flaw in the codec. Both numbers are always shown so you can see the tax.</p>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -221,10 +353,49 @@
     <div class="foot-links">
       <a href="/compress">Compress</a>
       <a href="/decompress">Decompress</a>
-      <a href="#how">How it works</a>
+      <a href="https://github.com/Mubby03/json-camera" target="_blank" rel="noopener">Source</a>
     </div>
   </div>
 </footer>
 
+<script>
+(function () {
+  // Tabs. Real buttons with real ARIA, so the keyboard and a screen reader both
+  // work without anything extra.
+  const tabs = [...document.querySelectorAll('[role=tab]')];
+  const show = (id) => {
+    for (const t of tabs) {
+      const on = t.id === id;
+      t.setAttribute('aria-selected', String(on));
+      document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+    }
+  };
+  tabs.forEach((t, i) => {
+    t.addEventListener('click', () => show(t.id));
+    t.addEventListener('keydown', (e) => {
+      const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (!d) return;
+      e.preventDefault();
+      const next = tabs[(i + d + tabs.length) % tabs.length];
+      next.focus(); show(next.id);
+    });
+  });
+  // Deep link, so "Install the library" in the hero lands on the right tab.
+  if (location.hash === '#developers') { show('tab-dev'); document.getElementById('start').scrollIntoView(); }
+  document.querySelectorAll('a[href="#developers"]').forEach(a =>
+    a.addEventListener('click', () => show('tab-dev')));
+
+  // Copy buttons. Falls back silently where the clipboard API is unavailable
+  // rather than leaving a button that looks broken.
+  document.querySelectorAll('.copy').forEach(b => b.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(b.dataset.copy);
+      const was = b.textContent;
+      b.textContent = 'Copied'; b.classList.add('done');
+      setTimeout(() => { b.textContent = was; b.classList.remove('done'); }, 1400);
+    } catch (_) { b.textContent = 'Select and copy'; }
+  }));
+})();
+</script>
 </body>
 </html>

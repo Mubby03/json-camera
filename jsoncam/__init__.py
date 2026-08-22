@@ -34,7 +34,7 @@ from pathlib import Path
 __version__ = "0.2.0"
 
 __all__ = [
-    "encode", "decode", "encode_lossless", "decode_lossless",
+    "encode", "decode", "encode_lossless", "decode_lossless", "bundled_models",
     "load_checkpoint", "stats", "prepare_dataset", "LatentDataset",
     "JSONCamera", "psnr", "ms_ssim", "__version__",
 ]
@@ -48,12 +48,27 @@ def _as_image(src):
     return src if hasattr(src, "size") and hasattr(src, "convert") else Image.open(src)
 
 
+def bundled_models():
+    """Checkpoints shipped inside the package, smallest rate first."""
+    here = Path(__file__).resolve().parent / "models"
+    return sorted(here.glob("*.pt")) if here.is_dir() else []
+
+
 def _resolve(checkpoint):
+    """Find a checkpoint, preferring one the caller trained.
+
+    A working tree beats the bundled models, so anyone who trains their own does
+    not have to pass a path. Falling back to the package is what makes a plain
+    `pip install` usable rather than a library that raises on first call.
+    """
     if checkpoint:
         return checkpoint
     for c in (DEFAULT_CHECKPOINT, "checkpoints/jc.best.pt"):
         if Path(c).exists():
             return c
+    shipped = bundled_models()
+    if shipped:
+        return str(shipped[0])
     raise FileNotFoundError(
         "No checkpoint found. Pass checkpoint=..., or train one with `jsoncam train`.")
 

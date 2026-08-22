@@ -330,3 +330,70 @@ details.disclose .inner { padding: 0 20px 20px; }
   .brand { font-size: 13px; letter-spacing: 0.1em; }
   .hero-actions .btn { width: 100%; }
 }
+
+/* -- audience split ------------------------------------------------------- */
+
+.tabs { display: flex; border: 1px solid var(--line); margin-bottom: 40px; max-width: 560px; }
+.tabs button {
+  flex: 1; padding: 16px 20px; background: transparent; border: 0;
+  border-left: 1px solid var(--line); cursor: pointer; text-align: left;
+  font-family: var(--sans); color: var(--muted); transition: background .12s linear;
+}
+.tabs button:first-child { border-left: 0; }
+.tabs button:hover { background: var(--surface-2); color: var(--text); }
+.tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-in); }
+.tabs .t-top {
+  display: block; font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: 0.16em; text-transform: uppercase; opacity: .75; margin-bottom: 5px;
+}
+.tabs .t-main { display: block; font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+.panes > div[hidden] { display: none; }
+
+/* -- code with a copy button ---------------------------------------------- */
+
+.snip { position: relative; border: 1px solid var(--line); background: var(--bg); }
+.snip-hd {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid var(--line);
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--dim);
+}
+.snip pre { margin: 0; padding: 18px; overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.7; }
+.snip .k { color: var(--accent); }
+.snip .c { color: var(--dim); }
+.copy {
+  background: transparent; border: 1px solid var(--line); color: var(--muted);
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em;
+  text-transform: uppercase; padding: 5px 11px; cursor: pointer;
+}
+.copy:hover { border-color: var(--muted); color: var(--text); }
+.copy.done { border-color: var(--accent); color: var(--accent); }
+
+/* -- feature rows --------------------------------------------------------- */
+
+.rows { border: 1px solid var(--line); }
+.row2 { display: grid; grid-template-columns: 260px 1fr; gap: 0; border-top: 1px solid var(--line); }
+.row2:first-child { border-top: 0; }
+.row2 dt {
+  padding: 22px 24px; font-weight: 700; font-size: 15.5px;
+  border-right: 1px solid var(--line); background: var(--surface);
+}
+.row2 dd { margin: 0; padding: 22px 24px; color: var(--muted); font-size: 14.5px; line-height: 1.7; }
+.row2 dd b { color: var(--text); font-weight: 700; }
+
+/* -- local badge ---------------------------------------------------------- */
+
+.local {
+  display: flex; gap: 16px; align-items: flex-start; padding: 22px 24px;
+  border: 1px solid var(--accent); border-left-width: 3px;
+  background: rgba(0, 229, 143, .05);
+}
+.local .big { font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--accent); margin-bottom: 8px; }
+.local p { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.7; }
+
+@media (max-width: 760px) {
+  .row2 { grid-template-columns: 1fr; }
+  .row2 dt { border-right: 0; border-bottom: 1px solid var(--line); padding-bottom: 14px; }
+  .tabs { max-width: none; }
+}

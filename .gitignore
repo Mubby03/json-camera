@@ -1,6 +1,7 @@
 .venv/
 data/
 checkpoints/
+!jsoncam/models/
 out/
 __pycache__/
 *.egg-info/
