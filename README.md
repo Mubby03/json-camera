@@ -67,10 +67,62 @@ model and a 2 MB one. **Train one model per quality level.**
 ## Install
 
 ```bash
-cd ~/dev/json-camera
-python3 -m venv .venv
-.venv/bin/pip install -e .
+pip install -e .            # or: pip install -e ".[web,train,dev]"
 ```
+
+Runtime needs only torch, numpy and pillow. The web app, the training pipeline
+and the tests are optional extras, so importing the library does not drag in
+FastAPI or torchvision.
+
+```python
+import jsoncam
+
+doc = jsoncam.encode("photo.jpg")            # learned codec, about 60x
+jsoncam.decode(doc, "restored.png")
+
+doc = jsoncam.encode_lossless("photo.png")   # nothing discarded, ~20% under PNG
+jsoncam.decode(doc, "exact.png")             # decode detects the format itself
+```
+
+## Training on the latents instead of the pixels
+
+The part worth stealing. A model does not have to see pixels: it can train on
+the latent grid directly, which is six times smaller than the picture it stands
+for. Every layer then works on a smaller tensor.
+
+```bash
+jsoncam prepare-latents photos/ --out train.jcl --size 224
+```
+
+```python
+from torch.utils.data import DataLoader
+from jsoncam import LatentDataset
+
+ds = LatentDataset("train.jcl")              # yields (latent, label)
+dl = DataLoader(ds, batch_size=64, num_workers=4, shuffle=True)
+```
+
+Subdirectories become class labels, so an `ImageFolder` layout works unchanged.
+Measured on one machine with the same architecture and batch either way:
+
+| | tensor | throughput | on disk |
+|---|---|---|---|
+| pixels | 3 x 224 x 224 | 50 img/s | 20.1 KB each (JPEG q90) |
+| latents | 128 x 14 x 14 | **462 img/s** | **3.1 KB each** |
+
+That is **9.2x faster training steps and 6.5x less disk**. Reproduce it yourself
+rather than taking the numbers on trust:
+
+```bash
+python scripts/benchmark_latents.py --images your/photos
+```
+
+Two things to know. Unpacking a latent costs about 5 ms, so four dataloader
+workers deliver ~750 images a second while the network above consumes 462:
+decoding is free because it happens off the critical path. And a latent only
+means anything to the checkpoint that produced it, so shards carry a model
+fingerprint and refuse to open under a different one. Retrain the codec and you
+rebuild the shards.
 
 ## Use
 

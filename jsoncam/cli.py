@@ -40,6 +40,14 @@ def cmd_train(args, extra):
     train.main(extra)
 
 
+def cmd_prepare_latents(args):
+    """Encode a folder of images into one shard of latents for training."""
+    from .dataset import prepare_dataset
+
+    prepare_dataset(args.images, args.out, checkpoint=args.checkpoint,
+                    size=args.size, limit=args.limit)
+
+
 def cmd_export(args):
     """Strip a training checkpoint down to just what decoding needs.
 
@@ -187,6 +195,16 @@ def build_parser():
 
     p = sub.add_parser("train", help="train a model (see `jsoncam train --help`)")
     p.set_defaults(fn=None)
+
+    p = sub.add_parser("prepare-latents",
+                       help="encode a folder into latents, for compressed-domain training")
+    p.add_argument("images")
+    p.add_argument("--out", required=True, help="output .jcl shard")
+    p.add_argument("-c", "--checkpoint", default="checkpoints/stable/jc-final.pt")
+    p.add_argument("--size", type=int, default=None,
+                   help="resize to NxN first, as a training pipeline usually would")
+    p.add_argument("--limit", type=int, default=None)
+    p.set_defaults(fn=cmd_prepare_latents)
 
     p = sub.add_parser("export", help="strip optimiser state for shipping")
     p.add_argument("input")

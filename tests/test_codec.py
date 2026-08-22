@@ -255,3 +255,92 @@ def test_lossless_beats_png_on_a_real_photograph():
 
     assert np.array_equal(np.asarray(lossless.decode_dict(doc)), np.asarray(img))
     assert doc["codec"]["bitstream_bytes"] < photos[0].stat().st_size
+
+
+# --------------------------------------------------------------------------
+# library surface and compressed-domain datasets
+
+
+def test_public_api_round_trips_both_modes(tmp_path):
+    import jsoncam
+
+    a = np.random.default_rng(0).integers(0, 256, (64, 80, 3), dtype=np.uint8)
+    src = tmp_path / "x.png"
+    Image.fromarray(a).save(src)
+
+    doc = jsoncam.encode_lossless(src)
+    assert np.array_equal(np.asarray(jsoncam.decode(doc)), a)   # decode auto-detects
+
+    out = tmp_path / "y.png"
+    jsoncam.decode_lossless(doc, out=out)
+    assert np.array_equal(np.asarray(Image.open(out).convert("RGB")), a)
+
+
+def test_latent_shard_round_trip(model, tmp_path):
+    """A shard must survive being written, reopened, and read by workers."""
+    from jsoncam.dataset import LatentDataset, ShardWriter
+
+    rng = np.random.default_rng(0)
+    w = ShardWriter(tmp_path / "s.jcl", model, size=64)
+    for i in range(5):
+        w.add(Image.fromarray(rng.integers(0, 256, (70, 90, 3), dtype=np.uint8)), label=i % 2)
+    assert w.close() == 5
+
+    ck = tmp_path / "m.pt"
+    torch.save({"model": model.state_dict(), "config": model.config}, ck)
+    ds = LatentDataset(tmp_path / "s.jcl", checkpoint=ck)
+    assert len(ds) == 5
+    assert ds.classes == [0, 1]
+    x, y = ds[3]
+    assert x.shape == torch.Size(ds.latent_shape) and x.dtype == torch.float32
+    assert y == 1
+
+
+def test_latent_shard_is_picklable_for_dataloader_workers(model, tmp_path):
+    """DataLoader pickles the dataset per worker, and an open file handle is not
+    picklable. Reading first, then pickling, is the exact sequence that broke."""
+    import pickle
+
+    from jsoncam.dataset import LatentDataset, ShardWriter
+
+    w = ShardWriter(tmp_path / "s.jcl", model, size=64)
+    w.add(Image.fromarray(np.full((64, 64, 3), 120, np.uint8)))
+    w.close()
+    ck = tmp_path / "m.pt"
+    torch.save({"model": model.state_dict(), "config": model.config}, ck)
+
+    ds = LatentDataset(tmp_path / "s.jcl", checkpoint=ck)
+    _ = ds[0]                                   # opens the handle
+    revived = pickle.loads(pickle.dumps(ds))    # must not raise
+    assert revived[0][0].shape == ds[0][0].shape
+
+
+def test_latent_shard_refuses_a_different_model(model, tmp_path):
+    """A latent is meaningless to any other checkpoint, so opening must fail
+    loudly rather than hand back plausible nonsense."""
+    from jsoncam.dataset import LatentDataset, ShardWriter
+
+    w = ShardWriter(tmp_path / "s.jcl", model, size=64)
+    w.add(Image.fromarray(np.full((64, 64, 3), 90, np.uint8)))
+    w.close()
+
+    other = JSONCamera(32, 48).eval()
+    ck = tmp_path / "other.pt"
+    torch.save({"model": other.state_dict(), "config": other.config}, ck)
+    with pytest.raises(ValueError, match="shard was built with model"):
+        LatentDataset(tmp_path / "s.jcl", checkpoint=ck)
+
+
+def test_latents_are_smaller_than_the_pixels_they_stand_for(model, tmp_path):
+    """The whole premise of compressed-domain training."""
+    from jsoncam.dataset import LatentDataset, ShardWriter
+
+    w = ShardWriter(tmp_path / "s.jcl", model, size=128)
+    w.add(Image.fromarray(np.random.default_rng(1).integers(0, 256, (128, 128, 3), dtype=np.uint8)))
+    w.close()
+    ck = tmp_path / "m.pt"
+    torch.save({"model": model.state_dict(), "config": model.config}, ck)
+
+    ds = LatentDataset(tmp_path / "s.jcl", checkpoint=ck)
+    c, h, wd = ds.latent_shape
+    assert c * h * wd < 3 * 128 * 128

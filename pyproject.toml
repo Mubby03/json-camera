@@ -1,9 +1,32 @@
 [project]
 name = "jsoncam"
-version = "0.1.0"
-description = "A learned image codec that stores pictures as JSON."
+version = "0.2.0"
+description = "A learned image codec that stores photographs as JSON, and trains models on its latents."
+readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["torch", "torchvision", "numpy", "pillow", "tqdm"]
+license = {text = "MIT"}
+authors = [{name = "Mubaraq Lawal"}]
+keywords = ["image-compression", "neural-compression", "codec", "entropy-coding",
+            "rans", "pytorch", "computer-vision", "lossless", "dataloader"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["torch", "numpy", "pillow"]
+
+[project.optional-dependencies]
+web = ["fastapi", "uvicorn", "python-multipart"]
+train = ["torchvision", "tqdm"]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/Mubby03/json-camera"
+Source = "https://github.com/Mubby03/json-camera"
+Demo = "https://json-camera.fly.dev"
 
 [project.scripts]
 jsoncam = "jsoncam.cli:main"
@@ -14,3 +37,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["jsoncam"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
