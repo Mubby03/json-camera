@@ -233,11 +233,15 @@ async def api_compress(
     # the mode promises to keep. Prediction and entropy coding are fast enough
     # to take the image at full resolution.
     note = None
+    if str(mode).lower() != "lossless" and img.mode in ("RGBA", "LA", "PA"):
+        note = ("This image has transparency, and the learned codec has three input "
+                "channels, so the alpha channel will be dropped. Lossless mode keeps it.")
     if str(mode).lower() != "lossless" and max(img.size) > MAX_SIDE:
         scale = MAX_SIDE / max(img.size)
         size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
         img = img.resize(size, Image.LANCZOS)
-        note = f"Resized to {size[0]} by {size[1]}. This demo caps the long side at {MAX_SIDE} pixels."
+        resized = f"Resized to {size[0]} by {size[1]}. This demo caps the long side at {MAX_SIDE} pixels."
+        note = f"{note} {resized}" if note else resized
 
     stem = safe_stem(file.filename)
     if str(mode).lower() == "lossless":

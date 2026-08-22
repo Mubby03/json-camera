@@ -157,6 +157,12 @@ def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TI
     # the pixels we encode are the pixels the photographer saw.
     img = ImageOps.exif_transpose(img)
     icc = img.info.get("icc_profile")
+    # The network has three input channels, so transparency cannot survive this
+    # path. Record that it was dropped rather than let a logo come back with an
+    # opaque black background and no explanation. Use the lossless mode, which
+    # codes alpha as a fourth plane, if you need it kept.
+    dropped_alpha = img.mode in ("RGBA", "LA", "PA") or (
+        img.mode == "P" and "transparency" in img.info)
     img = img.convert("RGB")
     W, H = img.size
     x = torch.from_numpy(np.asarray(img).copy()).permute(2, 0, 1).float().div(255.0).unsqueeze(0)
@@ -188,6 +194,7 @@ def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TI
         "model": {**model.config, "fingerprint": model_fingerprint(model)},
         "image": {
             "width": W, "height": H, "name": name,
+            "alpha_discarded": dropped_alpha,
             "icc_profile": base64.b64encode(icc).decode("ascii") if icc else None,
         },
         "latent": {"channels": C, "height": lh, "width": lw},

@@ -344,3 +344,29 @@ def test_latents_are_smaller_than_the_pixels_they_stand_for(model, tmp_path):
     ds = LatentDataset(tmp_path / "s.jcl", checkpoint=ck)
     c, h, wd = ds.latent_shape
     assert c * h * wd < 3 * 128 * 128
+
+
+def test_lossless_keeps_transparency():
+    """Dropping a channel is not lossless. A logo whose alpha is flattened comes
+    back with an opaque black background, which is worse than refusing."""
+    from jsoncam import lossless
+
+    a = np.zeros((40, 48, 4), np.uint8)
+    a[8:32, 8:40, :3] = [220, 40, 40]
+    a[8:32, 8:40, 3] = 255                       # opaque square on transparency
+    img = Image.fromarray(a, "RGBA")
+
+    back = lossless.decode_dict(lossless.encode_image(img))
+    assert back.mode == "RGBA"
+    assert np.array_equal(np.asarray(back), a)
+
+
+def test_lossy_admits_it_discarded_alpha(model):
+    """The learned codec has three input channels and cannot keep alpha. It must
+    say so in the header rather than hand back a silently flattened image."""
+    a = np.dstack([np.full((32, 32, 3), 100, np.uint8), np.zeros((32, 32), np.uint8)])
+    doc = codec.encode_image(model, Image.fromarray(a, "RGBA"))
+    assert doc["image"]["alpha_discarded"] is True
+
+    plain = codec.encode_image(model, Image.fromarray(a[:, :, :3]))
+    assert plain["image"]["alpha_discarded"] is False

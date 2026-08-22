@@ -155,15 +155,27 @@ def _tables(planes):
 
 
 def encode_image(img, name=None):
-    """PIL image -> JSON-ready dict, with nothing discarded."""
+    """PIL image -> JSON-ready dict, with nothing discarded.
+
+    Transparency is kept.  An image with an alpha channel gets a fourth plane,
+    predicted and coded exactly like the others, because a mode that promises to
+    discard nothing cannot quietly drop a channel: flatten a logo's alpha and its
+    transparent background comes back opaque black, which is worse than refusing.
+    Alpha is usually huge areas of 0 and 255, so MED predicts it almost perfectly
+    and it costs very little.
+    """
     t0 = time.time()
     img = ImageOps.exif_transpose(img)
     icc = img.info.get("icc_profile")
-    img = img.convert("RGB")
+    has_alpha = img.mode in ("RGBA", "LA", "PA") or (
+        img.mode == "P" and "transparency" in img.info)
+    img = img.convert("RGBA" if has_alpha else "RGB")
     a = np.asarray(img, dtype=np.uint8)
-    H, W, _ = a.shape
+    H, W = a.shape[:2]
 
-    planes = rgb_to_ycocg(a)
+    planes = list(rgb_to_ycocg(a[:, :, :3]))
+    if has_alpha:
+        planes.append(a[:, :, 3].astype(np.int32))
     resid = [predict_residual(p) for p in planes]
     del planes
     freqs, los, his = _tables(resid)
@@ -173,12 +185,13 @@ def encode_image(img, name=None):
     # a residual index cannot exceed a few thousand, and int64 would cost eight
     # bytes per sample twice over, which on a large photograph is enough memory
     # to have the process killed.  Planes are released as they are consumed.
-    syms = np.empty(3 * H * W, dtype=np.int32)
+    n_planes = len(resid)
+    syms = np.empty(n_planes * H * W, dtype=np.int32)
     for i, (r, lo) in enumerate(zip(resid, los)):
         syms[i * H * W : (i + 1) * H * W] = (r.ravel() - lo).astype(np.int32)
         resid[i] = None
     del resid
-    chans = np.repeat(np.arange(3, dtype=np.int32), H * W)
+    chans = np.repeat(np.arange(n_planes, dtype=np.int32), H * W)
     count = int(syms.size)
     blob, lanes = rans.encode(syms, chans, freqs, starts, PRECISION)
     del syms, chans
@@ -188,6 +201,7 @@ def encode_image(img, name=None):
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "image": {
             "width": W, "height": H, "name": name,
+            "alpha": bool(has_alpha),
             "icc_profile": base64.b64encode(icc).decode("ascii") if icc else None,
         },
         "codec": {
@@ -218,17 +232,24 @@ def decode_dict(doc):
     starts, lut = rans.build_luts(freqs)
 
     blob = base64.b85decode(doc["payload"]["data"].encode("ascii"))
-    chans = np.repeat(np.arange(3, dtype=np.int32), H * W)
+    n_planes = 4 if (doc.get("image") or {}).get("alpha") else 3
+    chans = np.repeat(np.arange(n_planes, dtype=np.int32), H * W)
     syms = rans.decode(blob, chans, freqs, starts, lut,
                        cdc["precision"], cdc["lanes"], cdc["count"])
     del chans
 
+    n_planes = 4 if (doc.get("image") or {}).get("alpha") else 3
     planes = []
-    for i in range(3):
+    for i in range(n_planes):
         r = syms[i * H * W : (i + 1) * H * W].reshape(H, W).astype(np.int32) + los[i]
         planes.append(reconstruct(r))
 
-    out = Image.fromarray(ycocg_to_rgb(*planes))
+    rgb = ycocg_to_rgb(*planes[:3])
+    if n_planes == 4:
+        rgba = np.dstack([rgb, planes[3].astype(np.uint8)])
+        out = Image.fromarray(rgba, "RGBA")
+    else:
+        out = Image.fromarray(rgb)
     icc = (doc.get("image") or {}).get("icc_profile")
     if icc:
         out.info["icc_profile"] = base64.b64decode(icc)
