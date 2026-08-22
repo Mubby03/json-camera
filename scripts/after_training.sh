@@ -2,8 +2,6 @@
 # Waits for the run to finish, then does the whole post-training pass unattended.
 set -u
 cd /Users/mubaraq/dev/json-camera
-R=out/RESULTS_hq.md
-exec > >(tee "$R") 2>&1
 
 echo "# High-quality run (lambda 0.05)"
 echo
