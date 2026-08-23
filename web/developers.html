@@ -34,7 +34,7 @@
     </p>
     <div class="actions">
       <a class="btn btn-lg" href="#install">Install it</a>
-      <a class="btn btn-plain btn-lg" href="https://github.com/Mubby03/json-camera" target="_blank" rel="noopener">Read the source</a>
+      <a class="btn btn-plain btn-lg" href="#agents">Prompts for your agent</a>
     </div>
   </div>
 </header>
@@ -145,6 +145,92 @@ dl = DataLoader(ds, batch_size=<span class="k">64</span>, num_workers=<span clas
         combined with it: a pretrained backbone expects 3 channels at 224&times;224 and a
         latent is 128 at 14&times;14.
       </p>
+    </div>
+  </div>
+</section>
+
+
+<!-- ============ AGENTS ============ -->
+<section class="section tint" id="agents">
+  <div class="wrap">
+    <h2>Working with a coding agent</h2>
+    <p class="sub">
+      Paste one of these into Claude Code, Cursor or whatever you use. Each one
+      points the agent at the machine-readable docs first, so it learns the
+      caveats before it writes anything.
+    </p>
+
+    <div class="callout info" style="margin-bottom:26px">
+      <b>Two files exist for this</b>
+      <p>
+        <a href="/AGENTS.md"><code>AGENTS.md</code></a> is the full brief: the API, the
+        measured numbers with their conditions, and a table of requests this library is
+        the <em>wrong</em> answer to. <a href="/llms.txt"><code>llms.txt</code></a> is the
+        short version. Both are served from the site and live in the repo, so an agent
+        can fetch either without cloning.
+      </p>
+    </div>
+
+    <div class="snip" style="margin-bottom:20px">
+      <div class="snip-hd"><span>1 &mdash; Should I even use this?</span>
+        <button class="copy" data-copy="Read https://json-camera.fly.dev/AGENTS.md, then tell me honestly whether json-camera is the right tool for what I am building. Work through its &quot;Should you use it at all&quot; section against my actual project. If WebP, AVIF or transfer learning would serve me better, say so plainly and explain why rather than finding a way to use it. Do not write any code yet.">Copy</button></div>
+<pre>Read https://json-camera.fly.dev/AGENTS.md, then tell me honestly
+whether json-camera is the right tool for what I am building. Work
+through its "Should you use it at all" section against my actual
+project. If WebP, AVIF or transfer learning would serve me better,
+say so plainly and explain why rather than finding a way to use it.
+Do not write any code yet.</pre>
+    </div>
+
+    <div class="snip" style="margin-bottom:20px">
+      <div class="snip-hd"><span>2 &mdash; Lossless archival in a pipeline</span>
+        <button class="copy" data-copy="Read https://json-camera.fly.dev/AGENTS.md. Add json-camera lossless compression to my archival pipeline. Requirements: verify every round trip with np.array_equal and fail loudly if it ever differs, since a lossless codec that is quietly lossy is worse than none. Preserve the alpha channel and the original filename. Warn me if any input is 16-bit or CMYK, because those are silently converted. Compare the output size against PNG and WebP lossless and report all three.">Copy</button></div>
+<pre>Read https://json-camera.fly.dev/AGENTS.md. Add json-camera lossless
+compression to my archival pipeline. Requirements: verify every round
+trip with np.array_equal and fail loudly if it ever differs, since a
+lossless codec that is quietly lossy is worse than none. Preserve the
+alpha channel and the original filename. Warn me if any input is
+16-bit or CMYK, because those are silently converted. Compare the
+output size against PNG and WebP lossless and report all three.</pre>
+    </div>
+
+    <div class="snip" style="margin-bottom:20px">
+      <div class="snip-hd"><span>3 &mdash; Compressed-domain training</span>
+        <button class="copy" data-copy="Read https://json-camera.fly.dev/AGENTS.md, especially the five conditions for compressed-domain training. First check my project against all five and tell me if any fail. If they all hold: convert my dataset with jsoncam.prepare_dataset, swap my DataLoader to jsoncam.LatentDataset, and adapt only the input stem of my model to take the latent shape. Then benchmark BOTH accuracy and throughput against the pixel pipeline, because accuracy on latents is unmeasured and speed alone does not tell me whether this was a good idea.">Copy</button></div>
+<pre>Read https://json-camera.fly.dev/AGENTS.md, especially the five
+conditions for compressed-domain training. First check my project
+against all five and tell me if any fail. If they all hold: convert my
+dataset with jsoncam.prepare_dataset, swap my DataLoader to
+jsoncam.LatentDataset, and adapt only the input stem of my model to
+take the latent shape. Then benchmark BOTH accuracy and throughput
+against the pixel pipeline, because accuracy on latents is unmeasured
+and speed alone does not tell me whether this was a good idea.</pre>
+    </div>
+
+    <div class="snip" style="margin-bottom:20px">
+      <div class="snip-hd"><span>4 &mdash; Build-time placeholders</span>
+        <button class="copy" data-copy="Read https://json-camera.fly.dev/AGENTS.md. I want low-quality image placeholders generated at build time. Note the constraint up front: browsers cannot decode json-camera files, so everything must be decoded during the build and emitted as ordinary images or data URIs, never fetched and decoded client side. Build a script that walks my image directory, produces a tiny placeholder for each, reports the byte size, and compares it against just using a small WebP. If WebP wins, tell me and stop.">Copy</button></div>
+<pre>Read https://json-camera.fly.dev/AGENTS.md. I want low-quality image
+placeholders generated at build time. Note the constraint up front:
+browsers cannot decode json-camera files, so everything must be
+decoded during the build and emitted as ordinary images or data URIs,
+never fetched and decoded client side. Build a script that walks my
+image directory, produces a tiny placeholder for each, reports the
+byte size, and compares it against just using a small WebP. If WebP
+wins, tell me and stop.</pre>
+    </div>
+
+    <div class="snip">
+      <div class="snip-hd"><span>5 &mdash; Build on the internals</span>
+        <button class="copy" data-copy="Read https://json-camera.fly.dev/AGENTS.md. I want to use json-camera's components on their own rather than the codec as a whole: jsoncam.rans for entropy coding my own symbol stream, jsoncam.entropy for a learned prior, or jsoncam.lossless for the reversible colour transform and MED predictor. Show me each one working standalone with a round-trip assertion, then help me wire the one I need into my own model. JSONCamera is an ordinary nn.Module, so subclassing or replacing it is fine.">Copy</button></div>
+<pre>Read https://json-camera.fly.dev/AGENTS.md. I want to use
+json-camera's components on their own rather than the codec as a
+whole: jsoncam.rans for entropy coding my own symbol stream,
+jsoncam.entropy for a learned prior, or jsoncam.lossless for the
+reversible colour transform and MED predictor. Show me each one
+working standalone with a round-trip assertion, then help me wire the
+one I need into my own model. JSONCamera is an ordinary nn.Module, so
+subclassing or replacing it is fine.</pre>
     </div>
   </div>
 </section>

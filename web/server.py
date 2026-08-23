@@ -571,6 +571,20 @@ def index():
     return page("index.html")
 
 
+@app.get("/llms.txt", response_class=Response)
+def llms_txt():
+    """The convention for making a site legible to a language model. Served from
+    the root because that is where tools look for it."""
+    return Response((HERE / "static" / "llms.txt").read_text(encoding="utf-8"),
+                    media_type="text/plain; charset=utf-8")
+
+
+@app.get("/AGENTS.md", response_class=Response)
+def agents_md():
+    return Response((ROOT / "AGENTS.md").read_text(encoding="utf-8"),
+                    media_type="text/markdown; charset=utf-8")
+
+
 @app.get("/chat", response_class=HTMLResponse)
 def chat_page():
     return page("chat.html")

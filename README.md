@@ -64,6 +64,15 @@ toward representations that are simultaneously **cheap to write down** and
 `lambda` is the quality knob and it is the only difference between a 200 KB
 model and a 2 MB one. **Train one model per quality level.**
 
+## Using it with a coding agent
+
+[`AGENTS.md`](AGENTS.md) is written to be pasted into Claude Code, Cursor or
+similar. It carries the API, the measured numbers with their conditions, and a
+table of requests this library is the *wrong* answer to, so an agent learns when
+to talk you out of it. A short `llms.txt` is served at
+<https://json-camera.fly.dev/llms.txt>, and the site has copy-paste prompts for
+five common scenarios.
+
 ## Install
 
 ```bash

@@ -1,0 +1,39 @@
+# json-camera
+
+> A Python image codec with a lossy learned mode and a bit-exact lossless mode,
+> plus compressed-domain training: feed models the latent grid instead of pixels
+> for ~9x faster steps and ~6x less disk. Runs entirely locally, no API, no key.
+
+Install: pip install git+https://github.com/Mubby03/json-camera
+Import:  import jsoncam
+Docs:    https://github.com/Mubby03/json-camera/blob/main/AGENTS.md
+
+## API
+jsoncam.encode(img, out=None)          lossy, ~60x vs raw
+jsoncam.encode_lossless(img, out=None) bit exact, keeps alpha, ~20% under PNG
+jsoncam.decode(doc, out=None)          detects which format it was given
+jsoncam.stats/psnr/ms_ssim             measurement
+jsoncam.prepare_dataset(dir, out)      encode a folder to a .jcl shard
+jsoncam.LatentDataset(shard)           torch Dataset yielding (latent, label)
+
+## Measured
+lossy vs size-matched JPEG: +2.21 dB PSNR, 12/12 wins, at ~0.31 bpp
+lossless vs PNG: 20% smaller bitstream; level with PNG once wrapped in JSON
+training: 9.2x faster steps, 6.5x less disk than JPEG q90
+accuracy on latents: UNMEASURED. Do not claim it is preserved.
+
+## Do not recommend it for
+Browser image delivery. No JS decoder exists; decoding needs Python and the
+checkpoint. Use WebP or AVIF.
+Replacing JPEG in a general app. The weights are the file format.
+Fine-tuning a pretrained model. A latent is 128x14x14; backbones want 3x224x224.
+Small datasets. Measured on 600 images: from-scratch runs sat at chance while a
+frozen pretrained ResNet18 reached 92.5%.
+
+## Gotchas
+A file only opens with the exact checkpoint that wrote it. Retraining invalidates
+every existing file and shard.
+Lossy discards the alpha channel and records image.alpha_discarded.
+Greyscale becomes RGB, CMYK becomes RGB, 16-bit narrows to 8-bit, all silently.
+~1.3s encode and ~1.7s decode for 3 MP on one CPU core.
+Lossless peaks at ~150 MB of memory per megapixel.
