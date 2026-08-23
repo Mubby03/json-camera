@@ -22,3 +22,7 @@ checkpoints/*
 .DS_Store
 *.md
 !web/README.md
+# Served at /AGENTS.md by the app, so it must survive the *.md rule above.
+# Without this the COPY in the Dockerfile silently has nothing to copy and the
+# route 500s in production while working perfectly on a dev machine.
+!AGENTS.md
