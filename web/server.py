@@ -581,7 +581,12 @@ def llms_txt():
 
 @app.get("/AGENTS.md", response_class=Response)
 def agents_md():
-    return Response((ROOT / "AGENTS.md").read_text(encoding="utf-8"),
+    # Lives at the repo root, outside the directories the image otherwise copies,
+    # so it went missing in the container once and surfaced as a bare 500.
+    path = ROOT / "AGENTS.md"
+    if not path.exists():
+        raise HTTPException(404, "AGENTS.md is not present in this deployment")
+    return Response(path.read_text(encoding="utf-8"),
                     media_type="text/markdown; charset=utf-8")
 
 

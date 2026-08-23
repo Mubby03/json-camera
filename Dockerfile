@@ -26,6 +26,9 @@ RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu \
 
 COPY --chown=user jsoncam ./jsoncam
 COPY --chown=user web ./web
+# Served at /AGENTS.md, so it has to be in the image. It lives at the repo root
+# by convention, which is outside everything else copied here.
+COPY --chown=user AGENTS.md ./AGENTS.md
 # Only the slim, shippable checkpoints. checkpoints/ itself holds training
 # checkpoints that carry Adam state at three times the size and are useless for
 # inference, so copying the whole directory would triple the image for nothing.
