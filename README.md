@@ -117,6 +117,13 @@ rather than taking the numbers on trust:
 python scripts/benchmark_latents.py --images your/photos
 ```
 
+**Before you build on this, read [`notebooks/cats_vs_dogs.ipynb`](notebooks/cats_vs_dogs.ipynb).**
+It runs the experiment on 300 cats and 300 dogs and reports what actually
+happened, which is that for a set that size you should not use this at all: both
+from-scratch runs land at chance while a frozen pretrained ResNet gets 92% in 87
+seconds, and the latent path cannot use a pretrained backbone. The notebook works
+out where the break-even actually is.
+
 Two things to know. Unpacking a latent costs about 5 ms, so four dataloader
 workers deliver ~750 images a second while the network above consumes 462:
 decoding is free because it happens off the critical path. And a latent only
