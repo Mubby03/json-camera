@@ -481,6 +481,84 @@ def api_download(job: str):
 
 
 # --------------------------------------------------------------------------
+# chat
+#
+# A private line between a phone and whoever is working on this repo at a
+# terminal.  Messages are appended to one file on a mounted volume, because the
+# machine stops when idle and its rootfs is replaced on every deploy: memory and
+# the rootfs would both lose the conversation.
+#
+# One shared key guards it, compared in constant time and required on every call.
+# Without a key set the endpoints refuse rather than defaulting to open, since a
+# chat that silently accepts strangers is worse than one that does not work.
+
+CHAT_DIR = Path(os.environ.get("JSONCAM_CHAT_DIR", tempfile.gettempdir()))
+CHAT_FILE = CHAT_DIR / "chat.jsonl"
+CHAT_KEY = os.environ.get("JSONCAM_CHAT_KEY", "")
+
+
+def check_key(key):
+    import hmac
+
+    if not CHAT_KEY:
+        raise HTTPException(503, "chat is not configured on this server")
+    if not key or not hmac.compare_digest(key, CHAT_KEY):
+        raise HTTPException(401, "wrong key")
+
+
+def chat_read(after=0):
+    if not CHAT_FILE.exists():
+        return []
+    out = []
+    with CHAT_FILE.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue                       # a torn final line, skip it
+            if m.get("id", 0) > after:
+                out.append(m)
+    return out
+
+
+def chat_append(who, text):
+    CHAT_DIR.mkdir(parents=True, exist_ok=True)
+    existing = chat_read()
+    msg = {"id": (existing[-1]["id"] + 1) if existing else 1,
+           "who": who, "text": text, "at": time.time()}
+    with CHAT_FILE.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(msg) + "\n")
+    return msg
+
+
+@app.get("/api/chat")
+def api_chat_get(after: int = 0, key: str = "", wait: int = 0):
+    """Messages after `after`. With `wait`, holds the request open until
+    something arrives, so the phone does not have to poll in a tight loop."""
+    check_key(key)
+    deadline = time.time() + min(wait, 50)
+    while True:
+        msgs = chat_read(after)
+        if msgs or time.time() >= deadline:
+            return {"messages": msgs, "now": time.time()}
+        time.sleep(1.0)
+
+
+@app.post("/api/chat")
+async def api_chat_post(text: str = Form(...), who: str = Form("mubaraq"), key: str = Form("")):
+    check_key(key)
+    text = text.strip()
+    if not text:
+        raise HTTPException(400, "empty message")
+    if len(text) > 8000:
+        raise HTTPException(413, "message too long")
+    return chat_append("claude" if who == "claude" else "mubaraq", text)
+
+
+# --------------------------------------------------------------------------
 # pages
 
 
@@ -491,6 +569,11 @@ def page(name):
 @app.get("/", response_class=HTMLResponse)
 def index():
     return page("index.html")
+
+
+@app.get("/chat", response_class=HTMLResponse)
+def chat_page():
+    return page("chat.html")
 
 
 @app.get("/developers", response_class=HTMLResponse)

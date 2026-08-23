@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>json-camera chat</title>
+<meta name="theme-color" content="#2a8a56">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="jc chat">
+<link rel="manifest" href="/static/manifest.json">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>💬</text></svg>">
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  :root{
+    --bg:#eceff3; --bar:#ffffff; --line:#dfe3e8;
+    --ink:#2f3640; --soft:#5a6472; --faint:#8b95a3;
+    --me:#35a86b; --them:#ffffff;
+    --sans:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    --mono:Menlo,Monaco,Consolas,monospace;
+    --serif:Georgia,serif;
+  }
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.5 var(--sans); -webkit-font-smoothing:antialiased;
+    display:flex; flex-direction:column; overscroll-behavior-y:contain;
+  }
+
+  header > *{max-width:none}
+  header{
+    background:linear-gradient(to bottom,#fff,#f7f8fa);
+    border-bottom:1px solid var(--line); box-shadow:0 1px 2px rgba(45,55,70,.05);
+    padding:calc(env(safe-area-inset-top) + 11px) 16px 11px;
+    display:flex; align-items:center; gap:11px; flex:none;
+  }
+  header .dot{width:9px;height:9px;border-radius:50%;background:#c3ccd6;flex:none;transition:background .2s}
+  header .dot.on{background:var(--me);box-shadow:0 0 0 3px rgba(53,168,107,.18)}
+  header h1{margin:0;font:400 19px/1.2 var(--serif)}
+  header h1 b{color:var(--me);font-weight:700}
+  header .state{margin-left:auto;font-size:12px;color:var(--faint)}
+
+  /* The bubbles are sized as a share of the column, so without a cap they run
+     the full width of a desktop window and stop reading as a conversation. */
+  #log{flex:1;overflow-y:auto;padding:16px 14px 8px;-webkit-overflow-scrolling:touch}
+  #log > *{max-width:620px;margin-left:auto;margin-right:auto}
+  .msg{max-width:min(82%,520px)}
+  .msg{max-width:82%;margin-bottom:11px;padding:10px 14px;border-radius:16px;
+       font-size:15.5px;line-height:1.5;word-wrap:break-word;white-space:pre-wrap;
+       box-shadow:0 1px 2px rgba(45,55,70,.10)}
+  #log > .msg.me{margin-right:0}
+  .msg.me{margin-left:auto;background:var(--me);color:#fff;border-bottom-right-radius:5px}
+  #log > .msg.them{margin-left:0}
+  .msg.them{margin-right:auto;background:var(--them);border:1px solid var(--line);border-bottom-left-radius:5px}
+  .msg code,.msg pre{font-family:var(--mono);font-size:13px}
+  .msg pre{margin:7px 0 0;padding:9px 11px;background:rgba(0,0,0,.055);border-radius:8px;overflow-x:auto}
+  .msg.me pre{background:rgba(255,255,255,.18)}
+  .when{font-size:11px;color:var(--faint);margin:-6px 4px 12px;}
+  .when.me{text-align:right}
+  .day{text-align:center;font-size:11.5px;color:var(--faint);margin:12px 0 14px;
+       text-transform:uppercase;letter-spacing:.05em}
+  .empty{text-align:center;color:var(--faint);font:italic 15px/1.6 var(--serif);padding:44px 24px}
+
+  footer{
+    background:linear-gradient(to bottom,#fff,#f7f8fa); border-top:1px solid var(--line);
+    padding:10px 12px calc(env(safe-area-inset-bottom) + 10px);
+    display:flex; gap:9px; align-items:flex-end; flex:none;
+  }
+  textarea{
+    flex:1; resize:none; max-height:132px; padding:11px 14px; font:15.5px/1.45 var(--sans);
+    border:1px solid #c9d0d8; border-radius:20px; background:#fff; color:var(--ink);
+  }
+  textarea:focus{outline:none;border-color:var(--me);box-shadow:0 0 0 3px rgba(53,168,107,.14)}
+  button.send{
+    flex:none; width:44px; height:44px; border-radius:50%; border:1px solid #2a8a56;
+    background:linear-gradient(to bottom,#43bd7c,var(--me)); color:#fff; font-size:19px;
+    cursor:pointer; box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 1px 2px rgba(45,55,70,.16);
+  }
+  button.send:disabled{opacity:.45}
+
+  #gate{position:fixed;inset:0;background:var(--bg);z-index:50;display:flex;
+        align-items:center;justify-content:center;padding:26px}
+  #gate .box{background:#fff;border:1px solid var(--line);border-radius:10px;
+             box-shadow:0 4px 16px rgba(45,55,70,.14);padding:28px 24px;max-width:340px;width:100%}
+  #gate h2{margin:0 0 6px;font:400 22px var(--serif)}
+  #gate p{margin:0 0 18px;color:var(--soft);font-size:14.5px}
+  #gate input{width:100%;padding:12px 14px;border:1px solid #c9d0d8;border-radius:7px;
+              font:15px var(--sans);margin-bottom:12px}
+  #gate button{width:100%;padding:13px;border-radius:7px;border:1px solid #2a8a56;
+               background:linear-gradient(to bottom,#43bd7c,var(--me));color:#fff;
+               font:600 15px var(--sans);cursor:pointer}
+  #gate .err{color:#d9534f;font-size:13.5px;margin-top:10px;display:none}
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <div class="box">
+    <h2>json<b style="color:#35a86b">camera</b> chat</h2>
+    <p>Enter the key to open the line.</p>
+    <input id="key" type="password" placeholder="key" autocomplete="current-password" enterkeyhint="go">
+    <button id="unlock">Open</button>
+    <div class="err" id="gate-err">That key was not accepted.</div>
+  </div>
+</div>
+
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>json<b>camera</b></h1>
+  <span class="state" id="state">connecting</span>
+</header>
+
+<div id="log"><div class="empty">No messages yet. Say something and it reaches the Mac.</div></div>
+
+<footer>
+  <textarea id="box" rows="1" placeholder="Message" enterkeyhint="send"></textarea>
+  <button class="send" id="send" disabled>&#10148;</button>
+</footer>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const log = $('log'), box = $('box'), send = $('send'), dot = $('dot'), state = $('state');
+  let key = localStorage.getItem('jc_key') || '';
+  let after = 0, seen = new Set(), lastDay = '';
+
+  /* ---- gate ---- */
+  async function tryKey(k) {
+    const r = await fetch(`/api/chat?after=0&key=${encodeURIComponent(k)}`);
+    return r.ok;
+  }
+  async function unlock() {
+    const k = $('key').value.trim();
+    if (!k) return;
+    if (await tryKey(k)) {
+      key = k; localStorage.setItem('jc_key', k);
+      $('gate').style.display = 'none';
+      start();
+    } else {
+      $('gate-err').style.display = 'block';
+    }
+  }
+  $('unlock').addEventListener('click', unlock);
+  $('key').addEventListener('keydown', e => { if (e.key === 'Enter') unlock(); });
+
+  /* ---- rendering ---- */
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  function format(t) {
+    // Fenced blocks and inline code, because most of what gets sent here is code.
+    return esc(t)
+      .replace(/```([\s\S]*?)```/g, (_, c) => `<pre>${c.trim()}</pre>`)
+      .replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  }
+  const clock = ts => new Date(ts * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  const dayOf = ts => new Date(ts * 1000).toLocaleDateString([], {weekday:'long', day:'numeric', month:'long'});
+
+  function add(m) {
+    if (seen.has(m.id)) return;
+    seen.add(m.id);
+    const first = log.querySelector('.empty');
+    if (first) first.remove();
+
+    const day = dayOf(m.at);
+    if (day !== lastDay) {
+      lastDay = day;
+      const d = document.createElement('div');
+      d.className = 'day'; d.textContent = day; log.append(d);
+    }
+    const mine = m.who !== 'claude';
+    const el = document.createElement('div');
+    el.className = 'msg ' + (mine ? 'me' : 'them');
+    el.innerHTML = format(m.text);
+    const w = document.createElement('div');
+    w.className = 'when ' + (mine ? 'me' : '');
+    w.textContent = (mine ? '' : 'claude · ') + clock(m.at);
+    log.append(el, w);
+  }
+  const atBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 120;
+  function scroll(force) { if (force || atBottom()) log.scrollTop = log.scrollHeight; }
+
+  /* ---- long poll ---- */
+  async function poll() {
+    while (true) {
+      try {
+        const r = await fetch(`/api/chat?after=${after}&key=${encodeURIComponent(key)}&wait=45`);
+        if (r.status === 401) { localStorage.removeItem('jc_key'); location.reload(); return; }
+        if (!r.ok) throw new Error(r.status);
+        const d = await r.json();
+        dot.classList.add('on'); state.textContent = 'connected';
+        const stick = atBottom();
+        for (const m of d.messages) { add(m); after = Math.max(after, m.id); }
+        if (d.messages.length) scroll(stick);
+      } catch (_) {
+        dot.classList.remove('on'); state.textContent = 'reconnecting';
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+  }
+
+  /* ---- sending ---- */
+  async function submit() {
+    const text = box.value.trim();
+    if (!text) return;
+    box.value = ''; grow(); send.disabled = true;
+    try {
+      const body = new FormData();
+      body.append('text', text); body.append('who', 'mubaraq'); body.append('key', key);
+      const r = await fetch('/api/chat', { method: 'POST', body });
+      if (r.ok) { const m = await r.json(); add(m); after = Math.max(after, m.id); scroll(true); }
+      else { box.value = text; }
+    } catch (_) { box.value = text; }
+    grow();
+  }
+  function grow() {
+    box.style.height = 'auto';
+    box.style.height = Math.min(box.scrollHeight, 132) + 'px';
+    send.disabled = !box.value.trim();
+  }
+  box.addEventListener('input', grow);
+  box.addEventListener('keydown', e => {
+    // Enter sends on a desktop keyboard; on a phone the key says "send" anyway.
+    if (e.key === 'Enter' && !e.shiftKey && window.matchMedia('(min-width: 700px)').matches) {
+      e.preventDefault(); submit();
+    }
+  });
+  send.addEventListener('click', submit);
+
+  function start() { scroll(true); poll(); }
+
+  if (key) {
+    tryKey(key).then(ok => {
+      if (ok) { $('gate').style.display = 'none'; start(); }
+      else { localStorage.removeItem('jc_key'); }
+    });
+  }
+
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+})();
+</script>
+</body>
+</html>
