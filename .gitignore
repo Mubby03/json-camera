@@ -8,3 +8,5 @@ __pycache__/
 *.pyc
 .DS_Store
 .pytest_cache/
+
+.bridge-state.json
