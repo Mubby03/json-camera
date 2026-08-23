@@ -493,6 +493,11 @@ def index():
     return page("index.html")
 
 
+@app.get("/developers", response_class=HTMLResponse)
+def developers_page():
+    return page("developers.html")
+
+
 @app.get("/compress", response_class=HTMLResponse)
 def compress_page():
     return page("compress.html")

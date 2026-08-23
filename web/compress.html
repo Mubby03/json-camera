@@ -13,11 +13,12 @@
 
 <nav class="nav">
   <div class="nav-in">
-    <a class="brand" href="/">JSON<b>CAMERA</b></a>
+    <a class="brand" href="/">json<b>camera</b></a>
     <div class="nav-links">
-      <a href="/#how">How it works</a>
       <a href="/compress" class="on">Compress</a>
       <a href="/decompress">Decompress</a>
+      <a href="/#how">How it works</a>
+      <a href="/developers">For developers</a>
     </div>
   </div>
 </nav>
@@ -67,8 +68,6 @@
           <p class="hint" id="model-hint">Lambda is the quality knob. Higher means a better picture and a bigger file.</p>
         </div>
 
-        </div>
-
         <div class="field" id="lossy-only-2">
           <label>Text encoding</label>
           <div class="segment">
@@ -78,16 +77,12 @@
           <p class="hint">Base85 fits about 6.1 bits per character, base64 fits 6. This is the cost of the container being text.</p>
         </div>
 
-        </div>
-
         <div class="field" id="lossy-only-3">
           <label class="check">
             <input type="checkbox" id="compare" checked>
             <span>Compare against JPEG at the same file size</span>
           </label>
           <p class="hint">JPEG quality is binary searched until it lands on your file size, so neither codec gets a favourable operating point.</p>
-        </div>
-
         </div>
 
         <div class="field">

@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>For developers &mdash; json-camera</title>
+<meta name="description" content="A Python image codec that runs entirely on your machine, plus compressed-domain training: 9x faster steps and 6x less disk by feeding models latents instead of pixels.">
+<meta name="theme-color" content="#f4f5f7">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📷</text></svg>">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-in">
+    <a class="brand" href="/">json<b>camera</b></a>
+    <div class="nav-links">
+      <a href="/compress">Compress</a>
+      <a href="/decompress">Decompress</a>
+      <a href="/#how">How it works</a>
+      <a href="/developers" class="on">For developers</a>
+    </div>
+  </div>
+</nav>
+
+<header class="jumbo">
+  <div class="wrap">
+    <h1>A codec you can <em>import</em>.</h1>
+    <p>
+      Lossy and lossless image compression in pure Python, running entirely on your
+      own machine. And a second thing worth more than the codec: train your models
+      on the compressed representation instead of on pixels, and the steps run
+      about nine times faster.
+    </p>
+    <div class="actions">
+      <a class="btn btn-lg" href="#install">Install it</a>
+      <a class="btn btn-plain btn-lg" href="https://github.com/Mubby03/json-camera" target="_blank" rel="noopener">Read the source</a>
+    </div>
+  </div>
+</header>
+
+<!-- ============ INSTALL ============ -->
+<section class="section" id="install">
+  <div class="wrap">
+    <h2>Install</h2>
+    <p class="sub">Three dependencies. Both trained models ship inside the package.</p>
+
+    <div class="snip" style="margin-bottom:22px">
+      <div class="snip-hd"><span>Terminal</span>
+        <button class="copy" data-copy="pip install git+https://github.com/Mubby03/json-camera">Copy</button></div>
+<pre>pip install git+https://github.com/Mubby03/json-camera</pre>
+    </div>
+
+    <div class="callout ok" style="margin-bottom:22px">
+      <b>It runs on your machine, not ours</b>
+      <p>
+        There is no service to call, no API key, no account and no telemetry. The
+        package is <code>torch</code>, <code>numpy</code> and <code>pillow</code>, with
+        <strong>no network code anywhere in it</strong> &mdash; verified by running a full
+        encode and decode with every socket blocked. Your images never leave your
+        computer and it works with the wifi off.
+      </p>
+    </div>
+
+    <div class="snip">
+      <div class="snip-hd"><span>Basic use</span>
+        <button class="copy" data-copy="import jsoncam&#10;&#10;doc = jsoncam.encode(&quot;photo.jpg&quot;)&#10;jsoncam.decode(doc, &quot;restored.png&quot;)&#10;&#10;doc = jsoncam.encode_lossless(&quot;photo.png&quot;)&#10;jsoncam.decode(doc, &quot;exact.png&quot;)">Copy</button></div>
+<pre><span class="k">import</span> jsoncam
+
+doc = jsoncam.encode(<span class="s">"photo.jpg"</span>)          <span class="c"># learned codec, about 60x</span>
+jsoncam.decode(doc, <span class="s">"restored.png"</span>)
+
+doc = jsoncam.encode_lossless(<span class="s">"photo.png"</span>) <span class="c"># bit exact, keeps alpha</span>
+jsoncam.decode(doc, <span class="s">"exact.png"</span>)           <span class="c"># format detected for you</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ============ COMPRESSED DOMAIN TRAINING ============ -->
+<section class="section tint">
+  <div class="wrap">
+    <h2>Training on latents instead of pixels</h2>
+    <p class="sub">
+      The part worth stealing, and the part with a real caveat attached.
+    </p>
+
+    <p style="max-width:70ch;margin:0 auto 30px;text-align:center;color:var(--ink-soft)">
+      A network does not have to see pixels. The codec's latent grid is
+      <strong>128&times;14&times;14</strong> where the image was <strong>3&times;224&times;224</strong>
+      &mdash; six times fewer values &mdash; so every layer downstream of the input does
+      less work. You convert the dataset once and train on it forever after.
+    </p>
+
+    <div class="snip" style="margin-bottom:30px">
+      <div class="snip-hd"><span>Convert once, then train as usual</span>
+        <button class="copy" data-copy="import jsoncam&#10;from torch.utils.data import DataLoader&#10;&#10;jsoncam.prepare_dataset(&quot;photos/&quot;, &quot;train.jcl&quot;, size=224)&#10;ds = jsoncam.LatentDataset(&quot;train.jcl&quot;)&#10;dl = DataLoader(ds, batch_size=64, num_workers=4, shuffle=True)">Copy</button></div>
+<pre><span class="k">import</span> jsoncam
+<span class="k">from</span> torch.utils.data <span class="k">import</span> DataLoader
+
+jsoncam.prepare_dataset(<span class="s">"photos/"</span>, <span class="s">"train.jcl"</span>, size=<span class="k">224</span>)  <span class="c"># once, ~27ms/image</span>
+ds = jsoncam.LatentDataset(<span class="s">"train.jcl"</span>)                    <span class="c"># yields (latent, label)</span>
+dl = DataLoader(ds, batch_size=<span class="k">64</span>, num_workers=<span class="k">4</span>, shuffle=<span class="k">True</span>)</pre>
+    </div>
+
+    <div class="tablecard" style="margin-bottom:26px">
+      <h3>Throughput and storage, measured</h3>
+      <div class="tablescroll">
+      <table>
+        <thead><tr><th>Pipeline</th><th class="n">Input tensor</th><th class="n">Values</th><th class="n">Throughput</th><th class="n">Disk / image</th></tr></thead>
+        <tbody>
+          <tr><td>Pixels</td><td class="n">3 &times; 224 &times; 224</td><td class="n">150,528</td><td class="n">50 img/s</td><td class="n">20.1 KB</td></tr>
+          <tr class="win"><td><strong>Latents</strong></td><td class="n">128 &times; 14 &times; 14</td><td class="n">25,088</td><td class="n"><span class="good">462 img/s</span></td><td class="n"><span class="good">3.1 KB</span></td></tr>
+          <tr><td>Difference</td><td class="n">&mdash;</td><td class="n">6.0&times; fewer</td><td class="n"><strong>9.2&times; faster</strong></td><td class="n"><strong>6.5&times; smaller</strong></td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="foot">Same architecture, same batch size, same machine. Reproduce with <code>scripts/benchmark_latents.py</code>.</div>
+    </div>
+
+    <div class="tablecard" style="margin-bottom:26px">
+      <h3>But does the model actually learn? Cats vs dogs, 300 each</h3>
+      <div class="tablescroll">
+      <table>
+        <thead><tr><th>Approach</th><th class="n">Test accuracy</th><th class="n">Time</th><th>Verdict</th></tr></thead>
+        <tbody>
+          <tr><td>CNN from scratch, on pixels</td><td class="n"><span class="bad">57.5%</span></td><td class="n">273 s</td><td>at chance</td></tr>
+          <tr><td>CNN from scratch, on latents</td><td class="n"><span class="bad">52.5%</span></td><td class="n">179 s</td><td>at chance, but faster</td></tr>
+          <tr class="win"><td><strong>Pretrained ResNet18, frozen</strong></td><td class="n"><span class="good">92.5%</span></td><td class="n">87 s</td><td><strong>wins outright</strong></td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="foot">
+        Chance is 50%. On a set this small, both from-scratch runs learn nothing, so
+        9&times; faster is 9&times; faster at learning nothing &mdash; and a latent cannot be fed to
+        a pretrained backbone. The full notebook is in the repo.
+      </div>
+    </div>
+
+    <div class="callout warn">
+      <b>Where this leaves you</b>
+      <p>
+        Compressed-domain training is worth it when you were going to train
+        <em>from scratch</em> on a <em>large</em> dataset anyway. If transfer learning is
+        an option for your task, it will almost certainly beat this, and it cannot be
+        combined with it: a pretrained backbone expects 3 channels at 224&times;224 and a
+        latent is 128 at 14&times;14.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ DECISION TABLE ============ -->
+<section class="section">
+  <div class="wrap">
+    <h2>Should you use it?</h2>
+    <p class="sub">Five questions. If any answer is no, the honest advice is don't.</p>
+
+    <div class="tablecard">
+      <h3>Decision checklist</h3>
+      <div class="tablescroll">
+      <table>
+        <thead><tr><th>Condition</th><th>Why it matters</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Training from scratch</strong></td>
+              <td>No pretrained backbone fits a 128-channel 14&times;14 input. If you can fine-tune an existing model, do that instead.</td></tr>
+          <tr><td><strong>Large dataset</strong></td>
+              <td>Conversion costs about 27 ms an image, paid once. Break-even is ~1.4 epochs, so the conversion is cheap &mdash; but on 600 images the whole question is moot.</td></tr>
+          <tr><td><strong>Disk or I/O hurts</strong></td>
+              <td>6&times; less data is real money on cloud storage and real time on a network-mounted dataset. If your data already fits in RAM, you gain little.</td></tr>
+          <tr><td><strong>Task tolerates a 16&times; downsample</strong></td>
+              <td>Classification, probably fine. Segmentation, detection, OCR, anything needing fine spatial precision &mdash; probably not.</td></tr>
+          <tr><td><strong>You can live without augmentation</strong></td>
+              <td>The finest crop is 16 px, colour jitter is impossible, and even a horizontal flip is not exact in latent space. On small datasets, losing augmentation costs more than 9&times; speed is worth.</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="foot">Accuracy on your task is unmeasured by us. Validate it before you commit.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ OTHER USE CASES ============ -->
+<section class="section tint">
+  <div class="wrap">
+    <h2>Other things it is good for</h2>
+    <p class="sub">Places where a small file matters more than a perfect one.</p>
+
+    <div class="cards" style="margin-bottom:26px">
+      <div class="card">
+        <div class="ico">&#9635;</div>
+        <h3>Placeholders and blur-ups</h3>
+        <p>Ship a tiny version inline in the HTML that renders instantly while the real image loads. At very low rates the codec produces a soft but structurally correct picture, which is exactly what a placeholder wants.</p>
+      </div>
+      <div class="card">
+        <div class="ico">&#9673;</div>
+        <h3>Avatars and profile pictures</h3>
+        <p>Small, numerous, and nobody inspects them at 100%. A few kilobytes each across a large user table adds up, and the quality floor is low.</p>
+      </div>
+      <div class="card">
+        <div class="ico">&#9634;</div>
+        <h3>Thumbnail grids</h3>
+        <p>Catalogue and gallery views load dozens of images at once. The bytes on the wire dominate the experience, not the fidelity of any single tile.</p>
+      </div>
+      <div class="card">
+        <div class="ico g">&#9679;</div>
+        <h3>Dataset archival</h3>
+        <p>Cold storage for image sets you may want again. Lossless mode keeps them bit exact; lossy keeps them at a fraction of the size if approximate is enough.</p>
+      </div>
+      <div class="card">
+        <div class="ico g">&#9679;</div>
+        <h3>Embedding images in JSON APIs</h3>
+        <p>The payload is already text, so it drops into a JSON response, a config file, a database text column or a git repository without a separate binary asset or base64 wrapper.</p>
+      </div>
+      <div class="card">
+        <div class="ico a">&#9650;</div>
+        <h3>Teaching and demos</h3>
+        <p>The whole pipeline is readable Python: a range coder, an entropy model, a predictor. Every component imports and runs on its own, which is hard to find in a production codec.</p>
+      </div>
+    </div>
+
+    <div class="callout info">
+      <b>A caution on the web cases</b>
+      <p>
+        A browser cannot decode these files. The model weights are the format, so
+        decoding needs Python and the checkpoint &mdash; which means a server round trip,
+        or decoding ahead of time. For placeholders that is fine, since you generate them
+        during a build. For anything decoded live in a browser, use WebP or AVIF instead.
+        Saying so is more useful than selling you a dead end.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ API ============ -->
+<section class="section">
+  <div class="wrap">
+    <h2>The surface</h2>
+    <p class="sub">Plain Python. No framework, no registry, no plugin system.</p>
+
+    <dl class="deflist" style="margin-bottom:26px">
+      <div><dt><code>jsoncam.encode(img)</code></dt>
+        <dd>Learned codec. Path or PIL image in, container dict out. Pass <code>out=</code> to write it. Roughly 60&times; smaller than raw, and <b>beats JPEG at a matched file size</b> on the default model.</dd></div>
+      <div><dt><code>jsoncam.encode_lossless(img)</code></dt>
+        <dd>Bit exact, no network involved, <b>keeps the alpha channel</b>. About 20% under PNG on the bitstream. Needs no checkpoint, so the file is self contained.</dd></div>
+      <div><dt><code>jsoncam.decode(doc)</code></dt>
+        <dd>Rebuilds either format &mdash; it reads which one it is, so callers never have to care.</dd></div>
+      <div><dt><code>jsoncam.prepare_dataset(dir, out)</code></dt>
+        <dd>Encodes a folder into one shard. <code>ImageFolder</code> layout works unchanged; subdirectories become integer labels.</dd></div>
+      <div><dt><code>jsoncam.LatentDataset(shard)</code></dt>
+        <dd>A real <code>torch.utils.data.Dataset</code>, so <code>Subset</code>, <code>ConcatDataset</code>, samplers and <code>transform=</code> all apply as normal.</dd></div>
+      <div><dt><code>jsoncam.psnr / ms_ssim</code></dt>
+        <dd>The two quality metrics, usable on their own against any pair of images.</dd></div>
+    </dl>
+
+    <div class="tablecard">
+      <h3>Everything is importable on its own</h3>
+      <div class="tablescroll">
+      <table>
+        <thead><tr><th>Component</th><th>Import</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td>Range coder</td><td><code>jsoncam.rans</code></td><td>Vectorised interleaved rANS, 512 lanes. Works on any symbol stream.</td></tr>
+          <tr><td>Entropy model</td><td><code>jsoncam.entropy</code></td><td>Factorised prior with monotonic per-channel CDFs.</td></tr>
+          <tr><td>Networks</td><td><code>jsoncam.model</code></td><td><code>JSONCamera</code> is an ordinary <code>nn.Module</code>. Subclass it or replace it.</td></tr>
+          <tr><td>Colour transform</td><td><code>jsoncam.lossless</code></td><td>YCoCg-R, reversible in integers, plus the MED predictor.</td></tr>
+          <tr><td>Metrics</td><td><code>jsoncam.metrics</code></td><td>MS-SSIM with a separable Gaussian.</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="foot"><code>codec.encode_image(your_model, img)</code> takes any model of the right shape. The file's fingerprint follows your weights automatically.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CAVEATS ============ -->
+<section class="section tint">
+  <div class="wrap">
+    <h2>What it does not do</h2>
+    <p class="sub">Stated here rather than discovered by you later.</p>
+    <div class="cards">
+      <div class="card">
+        <div class="ico a">&#9888;</div>
+        <h3>The weights are the format</h3>
+        <p>A file is only decodable by the exact checkpoint that wrote it. Every file carries a fingerprint and decoding refuses on a mismatch. Retrain the codec and old files stop opening.</p>
+      </div>
+      <div class="card">
+        <div class="ico a">&#9888;</div>
+        <h3>No browser decoding</h3>
+        <p>Decoding needs Python and torch. There is no JavaScript build, so anything client-side needs a server round trip or a build step.</p>
+      </div>
+      <div class="card">
+        <div class="ico a">&#9888;</div>
+        <h3>CPU bound</h3>
+        <p>About 1.3 s to encode and 1.7 s to decode a 3 megapixel image on one core. Fine for batch work, too slow for a request path without care.</p>
+      </div>
+      <div class="card">
+        <div class="ico a">&#9888;</div>
+        <h3>Lossy drops transparency</h3>
+        <p>The network has three input channels. The alpha channel is discarded and the header records it. Use lossless mode, which codes alpha as a fourth plane.</p>
+      </div>
+      <div class="card">
+        <div class="ico a">&#9888;</div>
+        <h3>Silent conversions</h3>
+        <p>Greyscale becomes three channels, CMYK becomes RGB, and 16-bit is narrowed to 8-bit without comment. Know this before feeding it scientific imagery.</p>
+      </div>
+      <div class="card">
+        <div class="ico a">&#9888;</div>
+        <h3>JSON costs 25%</h3>
+        <p>Text carries about 6.1 bits per character in base85, so the file is a quarter larger than the bitstream. On lossless that cancels the win against PNG entirely.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap" style="text-align:center">
+    <h2>Have a look at the code</h2>
+    <p class="sub">Roughly 4,000 lines of Python and 31 tests, all of it readable.</p>
+    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+      <a class="btn btn-lg" href="https://github.com/Mubby03/json-camera" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-plain btn-lg" href="/compress">Try the codec first</a>
+    </div>
+  </div>
+</section>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <div>
+      <p class="by">Built by <a href="https://mubby.space" target="_blank" rel="noopener">mubby.space</a></p>
+      <p>Trained on 800 DIV2K photographs. Scored against JPEG binary searched to the same file size, because matching on bytes is the only honest comparison.</p>
+    </div>
+    <div class="foot-links">
+      <a href="/">Home</a>
+      <a href="/compress">Compress</a>
+      <a href="/decompress">Decompress</a>
+      <a href="https://github.com/Mubby03/json-camera" target="_blank" rel="noopener">Source</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+document.querySelectorAll('.copy').forEach(b => b.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(b.dataset.copy);
+    const was = b.textContent;
+    b.textContent = 'Copied'; b.classList.add('done');
+    setTimeout(() => { b.textContent = was; b.classList.remove('done'); }, 1400);
+  } catch (_) { b.textContent = 'Select and copy'; }
+}));
+</script>
+</body>
+</html>
