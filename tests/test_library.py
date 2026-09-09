@@ -792,7 +792,7 @@ def test_two_different_faces_stay_two_people(tmp_path, monkeypatch):
     item = _file(library, lib, "both.jpg")
     library.add_faces(lib, item, [_face(_vec(1, 0, 0)), _face(_vec(0, 1, 0))])
 
-    assert len(library.people_in(lib)) == 2
+    assert len(library.people_in(lib, min_photos=1)) == 2
 
 
 def test_a_face_between_two_people_starts_its_own_pile(tmp_path, monkeypatch):
@@ -806,12 +806,13 @@ def test_a_face_between_two_people_starts_its_own_pile(tmp_path, monkeypatch):
     lib = library.library_id(library.new_key())
     library.add_faces(lib, _file(library, lib, "a.jpg"), [_face(_vec(1, 0, 0))])
     library.add_faces(lib, _file(library, lib, "b.jpg"), [_face(_vec(0, 1, 0))])
-    assert len(library.people_in(lib)) == 2
+    assert len(library.people_in(lib, min_photos=1)) == 2
 
     # Exactly between the two: similarity ~0.707 to each, so it clears the
     # threshold for both and is decisive for neither.
     library.add_faces(lib, _file(library, lib, "c.jpg"), [_face(_vec(1, 1, 0))])
-    assert len(library.people_in(lib)) == 3, "an ambiguous face merged two people"
+    assert len(library.people_in(lib, min_photos=1)) == 3, \
+        "an ambiguous face merged two people"
 
 
 def test_tiny_faces_are_never_stored(tmp_path, monkeypatch):
@@ -840,8 +841,13 @@ def test_the_threshold_is_stricter_than_opencv_verification_default():
     sys.path.insert(0, "web")
     import faces as face_model
 
-    assert face_model.MATCH > 0.477, "below the measured different-person ceiling"
+    # With every face accepted, strangers reached 0.477 and the threshold had to
+    # clear that. With profiles, blurs and tiny faces rejected they top out at
+    # 0.229, which is what bought the room to come down to 0.42 and catch a face
+    # that has changed. The gates are load-bearing for this number.
+    assert face_model.MATCH > 0.229 + 0.15, "too close to the measured stranger ceiling"
     assert face_model.MARGIN > 0
+    assert face_model.ADJUDICATE < face_model.MATCH < face_model.SAME_LOOK
 
 
 def test_merging_two_piles_keeps_every_photo(tmp_path, monkeypatch):
@@ -849,7 +855,7 @@ def test_merging_two_piles_keeps_every_photo(tmp_path, monkeypatch):
     lib = library.library_id(library.new_key())
     library.add_faces(lib, _file(library, lib, "a.jpg"), [_face(_vec(1, 0, 0))])
     library.add_faces(lib, _file(library, lib, "b.jpg"), [_face(_vec(0, 1, 0))])
-    first, second = (p["id"] for p in library.people_in(lib))
+    first, second = (p["id"] for p in library.people_in(lib, min_photos=1))
 
     assert library.merge_people(lib, first, second) is True
     people = library.people_in(lib)
@@ -865,7 +871,7 @@ def test_merging_keeps_a_name_that_was_already_given(tmp_path, monkeypatch):
     lib = library.library_id(library.new_key())
     library.add_faces(lib, _file(library, lib, "a.jpg"), [_face(_vec(1, 0, 0))])
     library.add_faces(lib, _file(library, lib, "b.jpg"), [_face(_vec(0, 1, 0))])
-    unnamed, named = (p["id"] for p in library.people_in(lib))
+    unnamed, named = (p["id"] for p in library.people_in(lib, min_photos=1))
     library.name_person(lib, named, "Grandpa")
 
     library.merge_people(lib, unnamed, named)
@@ -878,11 +884,11 @@ def test_merging_refuses_a_person_from_another_library(tmp_path, monkeypatch):
     yours = library.library_id(library.new_key())
     library.add_faces(lib := mine, _file(library, mine, "a.jpg"), [_face(_vec(1, 0, 0))])
     library.add_faces(yours, _file(library, yours, "b.jpg"), [_face(_vec(0, 1, 0))])
-    ours = library.people_in(mine)[0]["id"]
-    theirs = library.people_in(yours)[0]["id"]
+    ours = library.people_in(mine, min_photos=1)[0]["id"]
+    theirs = library.people_in(yours, min_photos=1)[0]["id"]
 
     assert library.merge_people(mine, ours, theirs) is False
-    assert len(library.people_in(yours)) == 1
+    assert len(library.people_in(yours, min_photos=1)) == 1
 
 
 def test_a_trashed_photo_takes_its_people_with_it(tmp_path, monkeypatch):
@@ -891,10 +897,10 @@ def test_a_trashed_photo_takes_its_people_with_it(tmp_path, monkeypatch):
     lib = library.library_id(library.new_key())
     item = _file(library, lib, "only.jpg")
     library.add_faces(lib, item, [_face(_vec(1, 0, 0))])
-    assert len(library.people_in(lib)) == 1
+    assert len(library.people_in(lib, min_photos=1)) == 1
 
     library.trash(lib, item)
-    assert library.people_in(lib) == []
+    assert library.people_in(lib, min_photos=1) == []
 
 
 def test_turning_faces_off_erases_rather_than_hides(tmp_path, monkeypatch):
@@ -919,15 +925,19 @@ def test_names_are_trimmed_and_capped(tmp_path, monkeypatch):
     library = _lib(tmp_path, monkeypatch)
     lib = library.library_id(library.new_key())
     library.add_faces(lib, _file(library, lib, "a.jpg"), [_face(_vec(1, 0, 0))])
-    person = library.people_in(lib)[0]["id"]
+    person = library.people_in(lib, min_photos=1)[0]["id"]
 
     library.name_person(lib, person, "   Grandpa   ")
+    # A named person is shown however few photographs they are in, because
+    # naming is somebody saying explicitly that this pile matters.
     assert library.people_in(lib)[0]["name"] == "Grandpa"
     library.name_person(lib, person, "x" * 200)
     assert len(library.people_in(lib)[0]["name"]) == 60
-    # Blanking a name puts the person back to unnamed rather than storing "".
+    # Blanking a name puts the person back to unnamed rather than storing "",
+    # and with one photograph that also puts them back below the floor.
     library.name_person(lib, person, "  ")
-    assert library.people_in(lib)[0]["name"] is None
+    assert library.people_in(lib) == []
+    assert library.people_in(lib, min_photos=1)[0]["name"] is None
 
 
 def test_a_person_is_counted_in_photos_not_faces(tmp_path, monkeypatch):
@@ -941,10 +951,11 @@ def test_a_person_is_counted_in_photos_not_faces(tmp_path, monkeypatch):
     lib = library.library_id(library.new_key())
     item = _file(library, lib, "both.jpg")
     library.add_faces(lib, item, [_face(_vec(1, 0, 0)), _face(_vec(0, 1, 0))])
-    first, second = (p["id"] for p in library.people_in(lib))
+    first, second = (p["id"] for p in library.people_in(lib, min_photos=1))
 
     library.merge_people(lib, first, second)
-    assert library.people_in(lib)[0]["live"] == 1, "counted faces instead of photos"
+    assert library.people_in(lib, min_photos=1)[0]["live"] == 1, \
+        "counted faces instead of photos"
 
 
 def test_effort_is_dropped_for_a_model_that_rejects_it(monkeypatch):
@@ -1206,3 +1217,187 @@ def test_requeue_all_skips_the_trash(tmp_path, monkeypatch):
     gone = _file(library, lib, "gone.jpg")
     library.trash(lib, gone)
     assert library.requeue_all() == 0
+
+
+# --------------------------------------------------------------------------
+# growth, recurrence, and not guessing
+
+
+def test_only_recurring_people_are_shown(tmp_path, monkeypatch):
+    """A pile of one is almost always a stranger who walked through a frame.
+
+    Showing them is what made the feature feel wrong even when the clustering
+    was right: forty circles, thirty-eight of them people you never met.
+    """
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    regular = _vec(1, 0, 0)
+    for name in ("one.jpg", "two.jpg", "three.jpg"):
+        library.add_faces(lib, _file(library, lib, name), [_face(regular)])
+    # A passer-by, in exactly one photograph.
+    library.add_faces(lib, _file(library, lib, "stranger.jpg"), [_face(_vec(0, 1, 0))])
+
+    shown = library.people_in(lib)
+    assert len(shown) == 1
+    assert shown[0]["live"] == 3
+    assert library.hidden_people(lib) == 1
+    # The admin view can still see everybody.
+    assert len(library.people_in(lib, min_photos=1)) == 2
+
+
+def test_a_named_person_is_shown_however_few_photos(tmp_path, monkeypatch):
+    """Naming somebody is them saying this pile matters. Hiding it is perverse."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    library.add_faces(lib, _file(library, lib, "once.jpg"), [_face(_vec(1, 0, 0))])
+    only = library.people_in(lib, min_photos=1)[0]["id"]
+    assert library.people_in(lib) == []
+
+    library.name_person(lib, only, "Temmy")
+    assert [p["name"] for p in library.people_in(lib)] == ["Temmy"]
+
+
+def test_a_face_that_changes_gradually_stays_one_person(tmp_path, monkeypatch):
+    """The growth case, and the reason a person has several looks.
+
+    A child at three and at ten do not resemble each other to any face model.
+    What saves it is that the photographs in between exist: each one matches the
+    look before it, a new look is recorded, and the chain joins ends that never
+    matched directly.
+    """
+    import numpy as np
+
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+
+    import faces as face_model
+
+    # A chain where each face is recognisably the previous one but plainly a
+    # different look: consecutive similarity 0.5, which sits between MATCH and
+    # SAME_LOOK, so every step records a new look rather than folding into the
+    # old one. The two ends share nothing at all, which is the point.
+    steps = []
+    for index in range(8):
+        vector = np.zeros(128, dtype="float32")
+        vector[index] = 1.0
+        vector[index + 1] = 1.0
+        steps.append(vector / float(np.linalg.norm(vector)))
+
+    consecutive = float(np.dot(steps[0], steps[1]))
+    first_last = float(np.dot(steps[0], steps[-1]))
+    assert face_model.MATCH < consecutive < face_model.SAME_LOOK, (
+        f"consecutive similarity {consecutive:.3f} does not exercise the new-look path")
+    assert first_last < face_model.ADJUDICATE, (
+        f"the ends at {first_last:.3f} are not far enough apart to be a real test")
+
+    for index, vector in enumerate(steps):
+        library.add_faces(lib, _file(library, lib, f"year{index}.jpg"), [_face(vector)])
+
+    people = library.people_in(lib)
+    assert len(people) == 1, (
+        f"a gradually changing face split into {len(people)} people; "
+        f"first and last similarity was {first_last:.3f}")
+    assert people[0]["live"] == 8
+
+
+def test_a_sudden_jump_does_not_merge_two_strangers(tmp_path, monkeypatch):
+    """The other side of the same coin: no intermediate photos, no chain."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    for name in ("a1.jpg", "a2.jpg"):
+        library.add_faces(lib, _file(library, lib, name), [_face(_vec(1, 0, 0))])
+    for name in ("b1.jpg", "b2.jpg"):
+        library.add_faces(lib, _file(library, lib, name), [_face(_vec(0, 0, 1))])
+
+    assert len(library.people_in(lib)) == 2
+
+
+def test_a_borderline_pair_is_recorded_for_a_second_opinion(tmp_path, monkeypatch):
+    """Close enough to be somebody already here, not close enough to act on.
+
+    This is where an aged face lands when no intermediate photograph exists, and
+    the honest move is to ask rather than to decide.
+    """
+    import numpy as np
+
+    library = _lib(tmp_path, monkeypatch)
+    import faces as face_model
+
+    lib = library.library_id(library.new_key())
+
+    # Pick a second vector that scores inside the adjudication band.
+    target = (face_model.ADJUDICATE + face_model.MATCH) / 2
+    angle = float(np.arccos(target))
+    for name in ("a1.jpg", "a2.jpg"):
+        library.add_faces(lib, _file(library, lib, name), [_face(_vec(1, 0, 0))])
+    for name in ("b1.jpg", "b2.jpg"):
+        library.add_faces(lib, _file(library, lib, name),
+                          [_face(_vec(float(np.cos(angle)), float(np.sin(angle)), 0))])
+
+    # Left apart, as they should be, but flagged.
+    assert len(library.people_in(lib)) == 2
+    waiting = library.next_verdict(limit=5)
+    assert len(waiting) == 1
+    assert face_model.ADJUDICATE <= waiting[0]["similarity"] < face_model.MATCH
+
+
+def test_a_pair_is_never_asked_about_twice(tmp_path, monkeypatch):
+    """A "different" answer is as valuable as a "same" one, and both are paid for."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    library.add_faces(lib, _file(library, lib, "a.jpg"), [_face(_vec(1, 0, 0))])
+    library.add_faces(lib, _file(library, lib, "b.jpg"), [_face(_vec(0, 1, 0))])
+    left, right = (p["id"] for p in library.people_in(lib, min_photos=1))
+
+    library.note_borderline(lib, left, right, 0.33)
+    library.note_borderline(lib, right, left, 0.33)   # same pair, other order
+    pair = "|".join(sorted((left, right)))
+    library.save_verdict(pair, "different", "test")
+
+    assert library.next_verdict(limit=5) == []
+    library.note_borderline(lib, left, right, 0.33)
+    assert library.next_verdict(limit=5) == [], "re-asked a settled pair"
+
+
+def test_singletons_are_not_worth_paying_to_ask_about(tmp_path, monkeypatch):
+    """Both sides must recur before a pair is worth a paid comparison."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    library.add_faces(lib, _file(library, lib, "a.jpg"), [_face(_vec(1, 0, 0))])
+    library.add_faces(lib, _file(library, lib, "b.jpg"), [_face(_vec(0, 1, 0))])
+    left, right = (p["id"] for p in library.people_in(lib, min_photos=1))
+    library.note_borderline(lib, left, right, 0.33)
+
+    assert library.next_verdict(limit=5) == []
+
+
+def test_merging_carries_the_looks_across(tmp_path, monkeypatch):
+    """Otherwise the next photo of them starts a third pile.
+
+    Which is exactly how a merge button appears not to work.
+    """
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    library.add_faces(lib, _file(library, lib, "a.jpg"), [_face(_vec(1, 0, 0))])
+    library.add_faces(lib, _file(library, lib, "b.jpg"), [_face(_vec(0, 1, 0))])
+    keep, absorb = (p["id"] for p in library.people_in(lib, min_photos=1))
+    library.merge_people(lib, keep, absorb)
+
+    # Another photograph of the absorbed appearance must land on the kept person.
+    library.add_faces(lib, _file(library, lib, "c.jpg"), [_face(_vec(0, 1, 0))])
+    people = library.people_in(lib, min_photos=1)
+    assert len(people) == 1, "the absorbed look stopped matching after the merge"
+    assert people[0]["id"] == keep
+
+
+def test_the_quality_gate_rejects_what_it_cannot_see():
+    """If it cannot see it properly, it must not guess."""
+    import sys
+
+    sys.path.insert(0, "web")
+    import faces as face_model
+
+    assert face_model.MIN_EDGE >= 60
+    assert 0 < face_model.MAX_YAW <= 0.5
+    assert face_model.MIN_SHARPNESS > 0
+    assert face_model.MIN_EYE_RATIO > 0

@@ -10,6 +10,13 @@ pixels at a decent size, and the one moment the full image is already in memory
 is while it is being encoded.  Decoding it again afterwards would cost seconds
 of neural network per photograph to recover something we were holding for free.
 
+**Faces it cannot see properly are thrown away rather than guessed at.**  Four
+gates, and every one of them exists because of a face that broke clustering:
+too small, eyes too close together to be face-on, nose too far off the eye
+midpoint (a profile), or too blurred.  Measured on one photograph, the largest
+face in the frame was in hard profile with the eyes 19 pixels apart, and its
+embedding described a silhouette; size alone had let it through.
+
 **Small faces are thrown away, and that is the whole trick.**  Measured on a
 crowd shot: across every pair of *different* people, cosine similarity averaged
 0.098, but seven pairs out of 190 crossed the 0.363 matching threshold and would
@@ -41,8 +48,27 @@ CONFIDENCE = float(os.environ.get("JSONCAM_FACE_CONFIDENCE", "0.8"))
 
 # The short edge of the face box, in pixels. Below this the embedding stops
 # describing a person and starts describing noise; see the module docstring for
-# the measurement this number comes from.
-MIN_EDGE = int(os.environ.get("JSONCAM_FACE_MIN_EDGE", "40"))
+# the measurement this number comes from. Raised from 40 after false merges
+# kept coming from the smallest faces that cleared the old bar.
+MIN_EDGE = int(os.environ.get("JSONCAM_FACE_MIN_EDGE", "60"))
+
+# How far the nose may sit from the midpoint of the eyes, as a fraction of the
+# distance between them. Near zero is face-on; large means the head is turned.
+#
+# This is the single most useful thing YuNet's landmarks buy. Measured on one
+# photograph: three faces at 0.08, 0.13 and 0.14, and a fourth at 1.55 which was
+# the *largest* face in the frame but in hard profile, with the eyes only 19
+# pixels apart. A profile embedding describes a silhouette rather than a person,
+# and that face is why size alone was not enough of a gate.
+MAX_YAW = float(os.environ.get("JSONCAM_FACE_MAX_YAW", "0.45"))
+
+# The eyes must be at least this fraction of the face box apart. Catches the
+# same problem from the other side, plus bad landmark fits.
+MIN_EYE_RATIO = float(os.environ.get("JSONCAM_FACE_MIN_EYE_RATIO", "0.22"))
+
+# Variance of the Laplacian over the crop: a blur measure. A motion-blurred face
+# embeds as an average of everybody. Measured usable faces scored 400 to 1300.
+MIN_SHARPNESS = float(os.environ.get("JSONCAM_FACE_MIN_SHARPNESS", "60"))
 
 # Cosine similarity above which two faces are treated as the same person.
 #
@@ -53,20 +79,29 @@ MIN_EDGE = int(os.environ.get("JSONCAM_FACE_MIN_EDGE", "40"))
 # person's photographs in with it, because the centroid then sits between two
 # people and attracts both.
 #
-# Measured on a photograph of six visibly different people, faces 61-116px:
-# every genuinely different pair scored at or below 0.477, with three pairs
-# between 0.36 and 0.48 that 0.363 merged into one person. The same face
-# re-embedded after blurring scored 0.977. So on this data the two populations
-# are separated by a wide gap, and 0.363 sits inside the wrong one.
+# Lowered from 0.5 once the quality gates went in, and that order matters. With
+# every face accepted, different people reached 0.477 and the threshold had to
+# sit above that. With profiles, blurs and tiny faces rejected, the same set of
+# strangers tops out at 0.229 and averages 0.104. Cleaning the input is what
+# buys the room to be more generous about matching, which is what catches a face
+# that has changed rather than only one photographed twice in a day.
 #
-# 0.5 sits in that gap. It will still split one person into two piles when
-# lighting or angle changes a lot between photographs, and that is the
-# deliberate direction to fail in: splitting is a five second fix with the merge
-# button, while a wrong merge quietly loses the distinction between two people.
-#
-# This wants calibrating against a real library. It is an env var for that
-# reason.
-MATCH = float(os.environ.get("JSONCAM_FACE_MATCH", "0.5"))
+# It still errs towards splitting, which is the recoverable direction: a split
+# is a five second fix with the merge button, while a wrong merge quietly loses
+# the distinction between two people and nothing on screen says so.
+MATCH = float(os.environ.get("JSONCAM_FACE_MATCH", "0.42"))
+
+# Below MATCH but above this, the two are worth a second opinion rather than a
+# guess in either direction. That band is where a person who has aged lives: the
+# embeddings no longer agree, but they are not strangers either. A vision model
+# is asked to look at the two faces, and "unsure" leaves them apart.
+ADJUDICATE = float(os.environ.get("JSONCAM_FACE_ADJUDICATE", "0.26"))
+
+# How close a face has to be to an existing look to be folded into it, rather
+# than becoming a new look of the same person. Comfortably above MATCH: joining
+# a look should mean "this is the same face again", while the gap between MATCH
+# and this is "recognisably them, but they have changed".
+SAME_LOOK = float(os.environ.get("JSONCAM_FACE_SAME_LOOK", "0.62"))
 
 # How much better the best match must be than the runner-up before a face is
 # assigned rather than made into a new person.
@@ -131,8 +166,29 @@ def find(image):
         for row in found:
             x, y, box_w, box_h = (float(v) for v in row[:4])
             score = float(row[-1])
-            if min(box_w, box_h) < MIN_EDGE:
+            edge = min(box_w, box_h)
+            if edge < MIN_EDGE:
                 continue                      # too small to identify anybody
+
+            # YuNet hands back five landmarks after the box: right eye, left
+            # eye, nose tip, then the two mouth corners.
+            right_eye, left_eye, nose = row[4:6], row[6:8], row[8:10]
+            eye_gap = float(np.linalg.norm(left_eye - right_eye))
+            if eye_gap / max(edge, 1e-6) < MIN_EYE_RATIO:
+                continue                      # eyes too close together to be face-on
+            eye_mid_x = (float(left_eye[0]) + float(right_eye[0])) / 2
+            yaw = abs(float(nose[0]) - eye_mid_x) / max(eye_gap, 1e-6)
+            if yaw > MAX_YAW:
+                continue                      # turned away; the embedding is a silhouette
+
+            top, left = max(0, int(y)), max(0, int(x))
+            patch = bgr[top:int(y + box_h), left:int(x + box_w)]
+            if patch.size == 0:
+                continue
+            sharpness = float(cv2.Laplacian(
+                cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var())
+            if sharpness < MIN_SHARPNESS:
+                continue                      # too blurred to describe a person
 
             aligned = recogniser.alignCrop(bgr, row)
             vector = recogniser.feature(aligned)[0].astype("float32")
@@ -155,7 +211,14 @@ def find(image):
                 "embedding": vector,
                 "crop": buffer.getvalue(),
                 "score": round(score, 4),
-                "edge": int(min(box_w, box_h)),
+                "edge": int(edge),
+                "yaw": round(yaw, 3),
+                "sharpness": round(sharpness, 1),
+                # One number for "how much should this face be trusted", used to
+                # pick the picture that represents a person and to decide which
+                # faces are allowed to start a new cluster.
+                "quality": round(min(1.0, edge / 160) * min(1.0, sharpness / 400)
+                                 * (1.0 - min(yaw, MAX_YAW) / MAX_YAW * 0.5) * score, 4),
             })
         return out
     except Exception:

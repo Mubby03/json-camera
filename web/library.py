@@ -127,13 +127,47 @@ CREATE TABLE IF NOT EXISTS people (
     id         TEXT PRIMARY KEY,
     library    TEXT NOT NULL,
     name       TEXT,
-    centroid   BLOB,
+    centroid   BLOB,          -- kept for older rows; matching uses person_looks
     face_count INTEGER DEFAULT 0,
     cover      TEXT,          -- the face id whose crop represents them
     cover_edge INTEGER DEFAULT 0,
     updated_at REAL
 );
 CREATE INDEX IF NOT EXISTS people_by_library ON people (library, face_count DESC);
+
+-- Several centroids per person, not one, and this is what makes growth work.
+--
+-- A child at three and the same child at ten do not look alike to any face
+-- model: the embeddings genuinely are far apart, and no threshold fixes that
+-- without merging strangers. What does fix it is that the photographs in
+-- between exist. Each new face joins the nearest *look*, and starts a new look
+-- of the same person when it is recognisably them but not like any look on
+-- file. So the child accumulates a three-year-old look, a five-year-old look
+-- and so on, consecutive photographs chain them together, and the ends of the
+-- chain never have to resemble each other.
+CREATE TABLE IF NOT EXISTS person_looks (
+    id         TEXT PRIMARY KEY,
+    person     TEXT NOT NULL,
+    library    TEXT NOT NULL,
+    centroid   BLOB,
+    face_count INTEGER DEFAULT 0,
+    created_at REAL
+);
+CREATE INDEX IF NOT EXISTS looks_by_library ON person_looks (library);
+CREATE INDEX IF NOT EXISTS looks_by_person ON person_looks (person);
+
+-- Answers to "are these two piles the same person", so a pair is never asked
+-- about twice. Written by the worker after a vision model looks at the two
+-- faces side by side; see web/server.py.
+CREATE TABLE IF NOT EXISTS face_verdicts (
+    pair       TEXT PRIMARY KEY,   -- the two person ids, sorted, joined by |
+    library    TEXT NOT NULL,
+    verdict    TEXT,               -- same | different | unsure
+    similarity REAL,
+    model      TEXT,
+    asked_at   REAL
+);
+CREATE INDEX IF NOT EXISTS verdicts_pending ON face_verdicts (library, verdict);
 
 -- Runtime configuration, so the admin page can change how this behaves without
 -- a redeploy. Env vars stay the default and the floor: an override only exists
@@ -663,40 +697,68 @@ def search(lib, query, limit=200):
 
 
 def add_faces(lib, item_id, found):
-    """File the faces from one photograph and group them. Returns person ids."""
+    """File the faces from one photograph and group them.
+
+    Matching is against every *look* on file rather than one centroid per
+    person, which is what lets somebody change over years and stay one person.
+    A face that clears MATCH against some look joins that person; if it is not
+    close enough to that look to be the same face again, it becomes a new look
+    of the same person, and future photographs can match either.
+
+    Returns the person ids touched, plus any borderline pairs worth a second
+    opinion.
+    """
     import faces as face_model
 
-    touched = []
+    touched, borderline = [], []
     for face in found:
         vector = face["embedding"]
         with _connect() as conn:
-            people = conn.execute(
-                "SELECT id, centroid, face_count FROM people WHERE library = ?",
-                (lib,)).fetchall()
+            looks = conn.execute(
+                "SELECT l.id, l.person, l.centroid, l.face_count "
+                "FROM person_looks l WHERE l.library = ?", (lib,)).fetchall()
 
-            best, best_score, runner_up = None, -1.0, -1.0
-            for person in people:
+            best = runner_up = None
+            best_score = runner_score = -1.0
+            for look in looks:
                 score = face_model.similarity(
-                    face_model.from_blob(person["centroid"]), vector)
+                    face_model.from_blob(look["centroid"]), vector)
                 if score > best_score:
-                    best, best_score, runner_up = person, score, best_score
-                elif score > runner_up:
-                    runner_up = score
+                    best, runner_up = look, best
+                    best_score, runner_score = score, best_score
+                elif score > runner_score:
+                    runner_up, runner_score = look, score
 
             face_id = secrets.token_urlsafe(12).replace("-", "_")
-            # Two conditions, not one. The face has to look like this person,
-            # and it has to look like this person *more clearly than like anyone
-            # else*. A face that sits between two piles is the face that welds
-            # them together, and a new pile is the recoverable answer.
-            decisive = runner_up < 0 or (best_score - runner_up) >= face_model.MARGIN
+            # The runner-up only counts as competition when it is a *different*
+            # person. Two looks of the same person scoring closely is the system
+            # working, not an ambiguity.
+            rival = (runner_score if runner_up is not None
+                     and best is not None
+                     and runner_up["person"] != best["person"] else -1.0)
+            decisive = rival < 0 or (best_score - rival) >= face_model.MARGIN
+
             if best is not None and best_score >= face_model.MATCH and decisive:
-                person_id = best["id"]
-                centroid = face_model.merged_centroid(
-                    face_model.from_blob(best["centroid"]), best["face_count"], vector)
+                person_id = best["person"]
+                if best_score >= face_model.SAME_LOOK:
+                    # The same face again: fold it into the look it matched.
+                    centroid = face_model.merged_centroid(
+                        face_model.from_blob(best["centroid"]), best["face_count"], vector)
+                    conn.execute(
+                        "UPDATE person_looks SET centroid = ?, face_count = face_count + 1 "
+                        "WHERE id = ?", (face_model.to_blob(centroid), best["id"]))
+                else:
+                    # Recognisably them, but they have changed. A new look, so
+                    # the old one is not dragged towards the new appearance and
+                    # both remain matchable.
+                    conn.execute(
+                        "INSERT INTO person_looks (id, person, library, centroid, "
+                        "face_count, created_at) VALUES (?, ?, ?, ?, 1, ?)",
+                        (secrets.token_urlsafe(9).replace("-", "_"), person_id, lib,
+                         face_model.to_blob(vector), time.time()))
                 conn.execute(
-                    "UPDATE people SET centroid = ?, face_count = face_count + 1, "
-                    "updated_at = ? WHERE id = ?",
-                    (face_model.to_blob(centroid), time.time(), person_id))
+                    "UPDATE people SET face_count = face_count + 1, updated_at = ? "
+                    "WHERE id = ?", (time.time(), person_id))
             else:
                 person_id = secrets.token_urlsafe(9).replace("-", "_")
                 conn.execute(
@@ -704,6 +766,16 @@ def add_faces(lib, item_id, found):
                     "cover, cover_edge, updated_at) VALUES (?, ?, NULL, ?, 1, ?, ?, ?)",
                     (person_id, lib, face_model.to_blob(vector), face_id,
                      face["edge"], time.time()))
+                conn.execute(
+                    "INSERT INTO person_looks (id, person, library, centroid, face_count, "
+                    "created_at) VALUES (?, ?, ?, ?, 1, ?)",
+                    (secrets.token_urlsafe(9).replace("-", "_"), person_id, lib,
+                     face_model.to_blob(vector), time.time()))
+                # Close enough to be somebody already here, but not close enough
+                # to act on. This is where a face that has aged lands, so record
+                # it for a second opinion instead of silently deciding.
+                if best is not None and best_score >= face_model.ADJUDICATE:
+                    borderline.append((person_id, best["person"], round(best_score, 4)))
 
             conn.execute(
                 "INSERT INTO faces (id, item, library, person, bbox, embedding, crop, "
@@ -712,22 +784,103 @@ def add_faces(lib, item_id, found):
                  face_model.to_blob(vector), face["crop"], face["score"],
                  face["edge"], time.time()))
 
-            # The biggest, clearest face becomes the one shown in the picker.
+            # The clearest face becomes the one shown in the picker, judged on
+            # the quality score rather than size alone.
+            quality = int(round(face.get("quality", 0) * 10000))
             conn.execute(
-                "UPDATE people SET cover = ?, cover_edge = ? "
-                "WHERE id = ? AND ? > cover_edge",
-                (face_id, face["edge"], person_id, face["edge"]))
+                "UPDATE people SET cover = ?, cover_edge = ? WHERE id = ? AND ? > cover_edge",
+                (face_id, quality, person_id, quality))
         touched.append(person_id)
+
+    for left, right, score in borderline:
+        note_borderline(lib, left, right, score)
     return touched
 
 
-def people_in(lib, named_first=True):
+def note_borderline(lib, left, right, similarity):
+    """Record two piles that might be one person, for the worker to look at.
+
+    Only pairs that have never been judged: a "different" verdict is as
+    valuable as a "same" one, and re-asking would spend money to be told the
+    same thing.
+    """
+    pair = "|".join(sorted((left, right)))
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO face_verdicts (pair, library, verdict, similarity, "
+            "asked_at) VALUES (?, ?, NULL, ?, NULL)", (pair, lib, similarity))
+
+
+def next_verdict(limit=1):
+    """Borderline pairs waiting on a second opinion.
+
+    Both sides must still exist and each must appear in at least two
+    photographs. A pile of one is usually a stranger passing through, and
+    paying to ask about it is money spent on somebody nobody is looking for.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT v.pair, v.library, v.similarity FROM face_verdicts v "
+            "WHERE v.verdict IS NULL LIMIT 200").fetchall()
+        out = []
+        for row in rows:
+            left, right = row["pair"].split("|")
+            counts = {}
+            covers = {}
+            for person in (left, right):
+                got = conn.execute(
+                    "SELECT p.cover, COUNT(DISTINCT f.item) AS photos FROM people p "
+                    "JOIN faces f ON f.person = p.id "
+                    "JOIN items i ON i.id = f.item AND i.deleted_at IS NULL "
+                    "WHERE p.id = ? GROUP BY p.id", (person,)).fetchone()
+                if not got:
+                    counts[person] = 0
+                    continue
+                counts[person] = got["photos"]
+                covers[person] = got["cover"]
+            if min(counts.get(left, 0), counts.get(right, 0)) < 2:
+                continue
+            out.append({"pair": row["pair"], "library": row["library"],
+                        "similarity": row["similarity"], "left": left, "right": right,
+                        "left_cover": covers.get(left), "right_cover": covers.get(right)})
+            if len(out) >= limit:
+                break
+    return out
+
+
+def save_verdict(pair, verdict, model):
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE face_verdicts SET verdict = ?, model = ?, asked_at = ? WHERE pair = ?",
+            (verdict, model, time.time(), pair))
+
+
+def verdicts_pending():
+    return len(next_verdict(limit=1000))
+
+
+# How many photographs somebody has to appear in before they are shown.
+#
+# Two, because the People row is for people you know and a pile of one is
+# almost always a stranger who walked through a frame. Showing singletons is
+# what makes the feature feel wrong even when the clustering is right: forty
+# circles, thirty-eight of them people you have never met. Apple hides them for
+# the same reason.
+MIN_APPEARANCES = int(os.environ.get("JSONCAM_FACE_MIN_APPEARANCES", "2"))
+
+
+def people_in(lib, named_first=True, min_photos=None):
     """Everybody found in this library, most photographed first.
 
+    Recurring faces only by default. A named person is always shown, however
+    few photographs they are in: naming somebody is a person saying explicitly
+    that this pile matters, and hiding it afterwards would be perverse.
+
     Only counts faces in photographs that are not in the trash, so deleting a
-    photo takes its people with it rather than leaving a person who appears in
+    photo takes its people with it rather than leaving somebody who appears in
     nothing.
     """
+    floor = MIN_APPEARANCES if min_photos is None else min_photos
     order = ("p.name IS NULL, live DESC" if named_first else "live DESC")
     with _connect() as conn:
         rows = conn.execute(
@@ -740,9 +893,21 @@ def people_in(lib, named_first=True):
             f"JOIN faces f ON f.person = p.id "
             f"JOIN items i ON i.id = f.item AND i.deleted_at IS NULL "
             f"WHERE p.library = ? "
-            f"GROUP BY p.id HAVING live > 0 "
-            f"ORDER BY {order}", (lib,)).fetchall()
+            f"GROUP BY p.id HAVING live > 0 AND (live >= ? OR p.name IS NOT NULL) "
+            f"ORDER BY {order}", (lib, floor)).fetchall()
     return [dict(r) for r in rows]
+
+
+def hidden_people(lib):
+    """How many piles are being withheld for appearing only once."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM (SELECT p.id, COUNT(DISTINCT f.item) AS live "
+            "FROM people p JOIN faces f ON f.person = p.id "
+            "JOIN items i ON i.id = f.item AND i.deleted_at IS NULL "
+            "WHERE p.library = ? AND p.name IS NULL GROUP BY p.id "
+            "HAVING live > 0 AND live < ?)", (lib, MIN_APPEARANCES)).fetchone()
+    return row["n"]
 
 
 def face_crop(lib, face_id):
@@ -801,6 +966,17 @@ def merge_people(lib, keep_id, absorb_id):
 
         conn.execute("UPDATE faces SET person = ? WHERE library = ? AND person = ?",
                      (keep_id, lib, absorb_id))
+        # The looks move too. Without this the absorbed person's appearances
+        # stop being matchable and the next photograph of them starts a third
+        # pile, which is how a merge button appears not to work.
+        conn.execute("UPDATE person_looks SET person = ? WHERE library = ? AND person = ?",
+                     (keep_id, lib, absorb_id))
+        # And the pair is settled, so it is never asked about again.
+        conn.execute(
+            "INSERT INTO face_verdicts (pair, library, verdict, model, asked_at) "
+            "VALUES (?, ?, 'same', 'person', ?) "
+            "ON CONFLICT(pair) DO UPDATE SET verdict = 'same', model = 'person', asked_at = ?",
+            ("|".join(sorted((keep_id, absorb_id))), lib, time.time(), time.time()))
         cover, cover_edge = keep["cover"], keep["cover_edge"]
         if absorb["cover_edge"] > (cover_edge or 0):
             cover, cover_edge = absorb["cover"], absorb["cover_edge"]
@@ -823,6 +999,8 @@ def forget_faces(lib):
     with _connect() as conn:
         faces_gone = conn.execute("DELETE FROM faces WHERE library = ?", (lib,)).rowcount
         people_gone = conn.execute("DELETE FROM people WHERE library = ?", (lib,)).rowcount
+        conn.execute("DELETE FROM person_looks WHERE library = ?", (lib,))
+        conn.execute("DELETE FROM face_verdicts WHERE library = ?", (lib,))
     return {"faces": faces_gone, "people": people_gone}
 
 

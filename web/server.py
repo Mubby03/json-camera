@@ -563,6 +563,38 @@ def backfill_one_place():
     return True
 
 
+def adjudicate_one():
+    """Ask about one borderline pair of people. True if it did any work.
+
+    This is the only place a vision model is allowed near identity, and only
+    for pairs the face model already declined to call. A clear "same" merges
+    them; "different" and "unsure" both leave them apart, and either way the
+    answer is stored so the pair is never paid for twice.
+    """
+    waiting = library.next_verdict(limit=1)
+    if not waiting:
+        return False
+    pair = waiting[0]
+    left = library.face_crop(pair["library"], pair["left_cover"] or "")
+    right = library.face_crop(pair["library"], pair["right_cover"] or "")
+    if not left or not right:
+        library.save_verdict(pair["pair"], "unsure", "no crop")
+        return True
+
+    answer = vision.compare_faces(left, right)
+    if not answer:
+        # Could not ask. Leave it unjudged so it is retried when the provider
+        # is working, rather than recording a verdict nobody gave.
+        return False
+
+    library.save_verdict(pair["pair"], answer["verdict"], answer["model"])
+    if answer["verdict"] == "same":
+        library.merge_people(pair["library"], pair["left"], pair["right"])
+        log.info("merged two piles at similarity %.3f: %s",
+                 pair["similarity"] or 0, answer["why"])
+    return True
+
+
 def analyse_one():
     """Describe the next waiting photograph. True if it did any work."""
     pending = library.next_pending(limit=1)
@@ -583,7 +615,7 @@ def analyse_one():
 def worker_loop():
     while True:
         did_work = False
-        for job in (backfill_one_place, analyse_one):
+        for job in (backfill_one_place, adjudicate_one, analyse_one):
             try:
                 did_work = job() or did_work
             except Exception:
@@ -856,7 +888,11 @@ def api_library_search(q: str, key: str = None, x_library_key: str = Header(None
 def api_library_people(key: str = None, x_library_key: str = Header(None)):
     """Everybody found in this library, most photographed first, named ones on top."""
     lib = require_key(x_library_key, None, key)
-    return {"people": library.people_in(lib), "faces_available": faces.available()}
+    return {"people": library.people_in(lib),
+            "hidden": library.hidden_people(lib),
+            "min_appearances": library.MIN_APPEARANCES,
+            "checking": library.verdicts_pending(),
+            "faces_available": faces.available()}
 
 
 @app.get("/api/library/people/{person_id}/photos")
@@ -1206,9 +1242,14 @@ def api_admin_overview(key: str = None, x_admin_key: str = Header(None)):
         "faces": {
             "available": faces.available(),
             "match": faces.MATCH,
+            "adjudicate": faces.ADJUDICATE,
+            "same_look": faces.SAME_LOOK,
             "margin": faces.MARGIN,
             "min_edge": faces.MIN_EDGE,
+            "max_yaw": faces.MAX_YAW,
+            "min_sharpness": faces.MIN_SHARPNESS,
             "confidence": faces.CONFIDENCE,
+            "min_appearances": library.MIN_APPEARANCES,
         },
         "codec": {
             "models": discover_models(),

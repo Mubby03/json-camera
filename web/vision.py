@@ -382,6 +382,168 @@ def _unfence(text):
     return stripped.strip()
 
 
+# --------------------------------------------------------------------------
+# second opinions on faces
+#
+# The face model decides identity; a vision model is only ever asked about the
+# cases the face model already said it could not call. That division is
+# deliberate. Asking a language model "who is this" is unreliable and is not a
+# thing to build a photo library on, but asking it "do these two crops show the
+# same person" is a plain visual comparison, and it is the one question that
+# unblocks the case no embedding can handle: somebody who has aged.
+#
+# It costs one call per borderline pair, not per face, and a pair is never asked
+# about twice. "unsure" leaves the two piles apart, because the whole complaint
+# that started this was guessing.
+
+PAIR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "same": {
+            "type": "string",
+            "enum": ["yes", "no", "unsure"],
+            "description": "Whether both faces are the same person.",
+        },
+        "why": {
+            "type": "string",
+            "description": "One short clause naming what decided it.",
+        },
+    },
+    "required": ["same", "why"],
+    "additionalProperties": False,
+}
+
+PAIR_PROMPT = (
+    "These are two face crops from one person's photo library, side by side, left "
+    "and right. Are they the same person?\n\n"
+    "They may have been taken years apart, so a child and an older child or an "
+    "adult can be the same person: judge bone structure, eye shape and spacing, "
+    "ear and nose shape, not age, hair, weight or expression.\n\n"
+    "Answer 'unsure' rather than guessing. A wrong 'yes' silently merges two "
+    "different people's photographs and nothing will tell the owner; 'unsure' "
+    "just leaves them separate, which they already are."
+)
+
+PAIR_SHAPE = (
+    "You compare two face crops. Reply with a single JSON object and nothing "
+    'else, with exactly these keys: "same" (one of "yes", "no", "unsure") and '
+    '"why" (one short clause). Prefer "unsure" over a guess.'
+)
+
+
+def compare_faces(left_crop, right_crop):
+    """Are these two faces the same person? Returns a verdict dict or None.
+
+    Takes two JPEG crops, stitches them side by side with a divider, and asks
+    once. One image rather than two because the question is a comparison, and
+    every model answers a comparison better when it can see both at once.
+    """
+    if not left_crop or not right_crop:
+        return None
+    provider = active()
+    if provider is None:
+        return None
+    try:
+        stitched = _side_by_side(left_crop, right_crop)
+        if stitched is None:
+            return None
+        if provider == "deepseek":
+            data = _pair_deepseek(stitched)
+        else:
+            data = _pair_claude(stitched)
+    except Exception as error:
+        log.warning("face comparison failed via %s: %s: %s",
+                    provider, type(error).__name__, error)
+        return None
+    if not data:
+        return None
+
+    same = str(data.get("same") or "unsure").strip().lower()
+    if same not in ("yes", "no", "unsure"):
+        same = "unsure"
+    return {"verdict": {"yes": "same", "no": "different"}.get(same, "unsure"),
+            "why": str(data.get("why") or "").strip()[:200],
+            "model": model_name(provider)}
+
+
+def _side_by_side(left, right, side=224):
+    """Two crops into one image, with a gap so they are not read as one face."""
+    try:
+        import io as _io
+
+        from PIL import Image
+
+        gap = 12
+        canvas = Image.new("RGB", (side * 2 + gap, side), (255, 255, 255))
+        for offset, blob in ((0, left), (side + gap, right)):
+            face = Image.open(_io.BytesIO(blob)).convert("RGB").resize(
+                (side, side), Image.LANCZOS)
+            canvas.paste(face, (offset, 0))
+        buffer = _io.BytesIO()
+        canvas.save(buffer, "JPEG", quality=88)
+        return buffer.getvalue()
+    except Exception:
+        return None
+
+
+def _pair_claude(image_bytes):
+    import anthropic
+
+    chosen = claude_model()
+    client = anthropic.Anthropic()
+    config = {"format": {"type": "json_schema", "schema": PAIR_SCHEMA}}
+    if _effort_ok.get(chosen, True):
+        config["effort"] = "low"
+    try:
+        response = client.messages.create(
+            model=chosen, max_tokens=512, output_config=config,
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                             "data": base64.b64encode(image_bytes).decode()}},
+                {"type": "text", "text": PAIR_PROMPT},
+            ]}])
+    except anthropic.BadRequestError as error:
+        if "effort" not in str(error).lower():
+            raise
+        _effort_ok[chosen] = False
+        return _pair_claude(image_bytes)
+    if getattr(response, "stop_reason", None) == "refusal":
+        return None
+    return json.loads(next(b.text for b in response.content if b.type == "text"))
+
+
+def _pair_deepseek(image_bytes):
+    import urllib.error
+    import urllib.request
+
+    data_url = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    body = json.dumps({
+        "model": deepseek_model(),
+        "max_tokens": 512,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": PAIR_SHAPE},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
+                {"type": "text", "text": PAIR_PROMPT},
+            ]},
+        ],
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        DEEPSEEK_URL, data=body, method="POST",
+        headers={"Authorization": f"Bearer {os.environ['DEEPSEEK_API_KEY']}",
+                 "Content-Type": "application/json",
+                 "User-Agent": "json-camera/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(
+            f"HTTP {error.code}: {error.read().decode('utf-8', 'replace')[:300]}") from None
+    return json.loads(_unfence(payload["choices"][0]["message"]["content"]))
+
+
 def searchable(analysis, item=None):
     """One lowercase blob of everything worth matching a query against.
 
