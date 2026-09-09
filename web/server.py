@@ -657,18 +657,65 @@ def api_library_check(key: str = None, x_library_key: str = Header(None)):
     return {"verdict": library.inspect_key(x_library_key or key or "")}
 
 
+# How many photographs one request may carry. Encoding is seconds each on a
+# single core, so a request holding fifty would sit silent long enough for
+# something in the path to give up. Past this the Shortcut's loop is the right
+# shape, and the error says so.
+BATCH_MAX = int(os.environ.get("JSONCAM_BATCH_MAX", "8"))
+
+
 @app.post("/api/library/upload")
 async def api_library_upload(
-    file: UploadFile = File(...),
+    # A list, not one file. This used to be a bare `UploadFile`, and when a
+    # Shortcut sent several photographs under the same field name FastAPI kept
+    # the first and silently dropped the rest: select twelve, get one, no error.
+    # Accepting a list means the endpoint works whether the Shortcut loops per
+    # photograph or hands over the whole selection at once.
+    file: list[UploadFile] = File(...),
     key: str = Form(None),
     model_id: str = Form(None),
     mode: str = Form("lossy"),
     gps: str = Form("true"),
     x_library_key: str = Header(None),
 ):
-    """Encode one photograph and file it. This is the Shortcut's whole job."""
-    lib = require_key(x_library_key, key)
+    """Encode the photographs in this request and file them.
 
+    Returns one result per photograph. A single-photograph request still gets
+    the flat shape it always did, so an existing Shortcut keeps working
+    unchanged.
+    """
+    lib = require_key(x_library_key, key)
+    incoming = [f for f in (file or []) if f is not None]
+    if not incoming:
+        raise HTTPException(400, "no photo in that request")
+    if len(incoming) > BATCH_MAX:
+        raise HTTPException(413, (
+            f"That request carried {len(incoming)} photos and this endpoint takes "
+            f"{BATCH_MAX} at a time, because each one is seconds of encoding. Send them "
+            f"in smaller batches, or use a Repeat with Each loop in the Shortcut so each "
+            f"photo is its own request, which has no limit."))
+
+    results, failures = [], []
+    for one in incoming:
+        try:
+            results.append(await _store_one(lib, one, model_id, mode, gps))
+        except HTTPException as error:
+            # One unreadable photograph must not throw away the others in the
+            # same request.
+            failures.append({"name": (one.filename or "photo"), "error": error.detail})
+
+    if not results and failures:
+        raise HTTPException(415, failures[0]["error"])
+
+    if len(incoming) == 1 and results:
+        return results[0]                 # the shape older Shortcuts expect
+    return {"uploaded": len(results), "failed": len(failures),
+            "photos": results, "errors": failures,
+            "library_items": library.usage(lib)["items"]}
+
+
+async def _store_one(lib, file, model_id, mode, gps):
+    """Encode and file exactly one photograph."""
     used = library.usage(lib)
     if used["items"] >= library.MAX_ITEMS:
         raise HTTPException(413, f"this library is full at {library.MAX_ITEMS} photos")
@@ -850,7 +897,8 @@ def api_library_face_crop(face_id: str, key: str = None, x_library_key: str = He
 def api_library_get_settings(key: str = None, x_library_key: str = Header(None)):
     lib = require_key(x_library_key, None, key)
     return {"settings": library.settings(lib), "ai_available": vision.available(),
-            "model": vision.MODEL, "pending": library.queue_depth(lib)}
+            "provider": vision.active(), "model": vision.model_name(),
+            "pending": library.queue_depth(lib)}
 
 
 @app.post("/api/library/settings")

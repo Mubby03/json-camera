@@ -981,7 +981,7 @@ def test_effort_is_dropped_for_a_model_that_rejects_it(monkeypatch):
     fake.Anthropic = lambda: types.SimpleNamespace(messages=FakeMessages())
     fake.BadRequestError = FakeBadRequest
     monkeypatch.setitem(sys.modules, "anthropic", fake)
-    monkeypatch.setattr(vision, "available", lambda: True)
+    monkeypatch.setattr(vision, "active", lambda: "claude")
     monkeypatch.setattr(vision, "_effort_ok", {})
 
     out = vision.describe(b"pretend-webp")
@@ -993,3 +993,90 @@ def test_effort_is_dropped_for_a_model_that_rejects_it(monkeypatch):
     calls.clear()
     vision.describe(b"pretend-webp")
     assert len(calls) == 1 and "effort" not in calls[0]
+
+
+# --------------------------------------------------------------------------
+# two providers, one shape
+
+
+def test_provider_selection(monkeypatch):
+    """An explicit choice must be honoured even when its key is missing.
+
+    Falling through to the other provider would silently spend money on the
+    expensive one after somebody deliberately picked the cheap one.
+    """
+    import importlib
+    import sys
+
+    sys.path.insert(0, "web")
+    import vision
+
+    def reload_with(**env):
+        for name in ("DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                     "JSONCAM_VISION_PROVIDER"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("XDG_CONFIG_HOME", "/nonexistent-for-this-test")
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        return importlib.reload(vision)
+
+    assert reload_with().active() is None
+    assert reload_with(DEEPSEEK_API_KEY="k").active() == "deepseek"
+    assert reload_with(ANTHROPIC_API_KEY="k").active() == "claude"
+    # Both present: auto takes the cheaper one.
+    assert reload_with(DEEPSEEK_API_KEY="k", ANTHROPIC_API_KEY="k").active() == "deepseek"
+    # Explicitly asked for Claude, and got it.
+    both = reload_with(DEEPSEEK_API_KEY="k", ANTHROPIC_API_KEY="k",
+                       JSONCAM_VISION_PROVIDER="claude")
+    assert both.active() == "claude"
+    # Explicitly asked for DeepSeek with no DeepSeek key: off, not a fallback.
+    only = reload_with(ANTHROPIC_API_KEY="k", JSONCAM_VISION_PROVIDER="deepseek")
+    assert only.active() is None
+    assert only.available() is False
+
+
+def test_both_providers_are_coerced_to_one_shape():
+    """The search index and the gallery must not be able to tell who answered.
+
+    Claude's schema is enforced by the API; DeepSeek's is only asked for in the
+    prompt, so a string where a number belongs is a real possibility.
+    """
+    import sys
+
+    sys.path.insert(0, "web")
+    import vision
+
+    sloppy = vision._coerce(
+        {"caption": "  A cat on a sofa. ", "tags": "Cat, Sofa , , ", "people": "3",
+         "kind": "PHOTO", "text": "  "},
+        "deepseek-v4-flash-vision-exp")
+    strict = vision._coerce(
+        {"caption": "A cat on a sofa.", "tags": ["cat", "sofa"], "people": 3,
+         "kind": "photo", "text": ""},
+        "claude-haiku-4-5")
+
+    assert {k: v for k, v in sloppy.items() if k != "model"} == \
+           {k: v for k, v in strict.items() if k != "model"}
+    assert sloppy["people"] == 3 and sloppy["tags"] == ["cat", "sofa"]
+    assert sloppy["text"] is None
+
+
+def test_a_nonsense_kind_becomes_other_rather_than_leaking_through():
+    import sys
+
+    sys.path.insert(0, "web")
+    import vision
+
+    assert vision._coerce({"kind": "a lovely day"}, "m")["kind"] == "other"
+    assert vision._coerce({"kind": "receipt"}, "m")["kind"] == "receipt"
+
+
+def test_fenced_json_is_unwrapped():
+    """json_object mode should prevent it, but the vision model is experimental."""
+    import sys
+
+    sys.path.insert(0, "web")
+    import vision
+
+    assert json.loads(vision._unfence('```json\n{"caption":"x"}\n```'))["caption"] == "x"
+    assert json.loads(vision._unfence('{"caption":"x"}'))["caption"] == "x"

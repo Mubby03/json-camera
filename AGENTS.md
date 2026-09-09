@@ -155,6 +155,8 @@ Reproduce: `python scripts/benchmark.py` and `python scripts/benchmark_latents.p
 - **Memory:** lossless peaks around 150 MB per megapixel. A 13 MP image needs about 2 GB.
 - **`LatentDataset` opens its file lazily per worker.** It defines `__getstate__` so it survives being pickled to DataLoader workers.
 - **The embedded preview costs real bytes.** Measured on DIV2K at 1600px: about 15% of the bitstream, and `stats(doc)` reports it as `preview_bytes` rather than letting it show up as container overhead. It is a deliberate purchase, and `preview=False` declines it.
+- **Captioning takes either provider.** `JSONCAM_VISION_PROVIDER` is `claude`, `deepseek` or `auto`; auto prefers DeepSeek when `DEEPSEEK_API_KEY` is set. Measured per photograph on preview-sized images: Opus 5 ~$0.0060, Haiku 4.5 ~$0.0012, `deepseek-v4-flash-vision-exp` ~$0.0005. Only Claude's output is schema-enforced, so `vision._coerce` normalises both into one shape and nothing downstream can tell which answered.
+- **`/api/library/upload` takes several files under one `file` field.** It used to be a bare `UploadFile`, which silently kept the first and dropped the rest. Up to `JSONCAM_BATCH_MAX` (8) per request; a single file still returns the old flat shape.
 - **HEIC needs an optional dependency.** Every photograph an iPhone takes is HEIC and Pillow cannot open one unaided. Call `jsoncam.formats.enable_heif()` (the CLI and the web app both do) and install `jsoncam[heif]`, or a phone photo fails as "not an image we can read".
 - **`meta.extract` must be called before `exif_transpose`,** which consumes the orientation tag. `codec.encode_image` already orders this correctly; a caller assembling their own pipeline has to.
 
