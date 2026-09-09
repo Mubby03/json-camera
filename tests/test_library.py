@@ -1080,3 +1080,129 @@ def test_fenced_json_is_unwrapped():
 
     assert json.loads(vision._unfence('```json\n{"caption":"x"}\n```'))["caption"] == "x"
     assert json.loads(vision._unfence('{"caption":"x"}'))["caption"] == "x"
+
+
+# --------------------------------------------------------------------------
+# runtime configuration and the admin surface
+
+
+def test_an_override_beats_the_environment_and_clearing_gives_it_back(tmp_path, monkeypatch):
+    """Clearing has to restore the deployed default.
+
+    Otherwise the only way back from a bad setting is remembering what the
+    environment said, which nobody does.
+    """
+    library = _lib(tmp_path, monkeypatch)
+
+    assert library.get_config("vision_model_claude") is None
+    assert library.get_config("vision_model_claude", "from-env") == "from-env"
+
+    library.set_config("vision_model_claude", "claude-haiku-4-5")
+    assert library.get_config("vision_model_claude", "from-env") == "claude-haiku-4-5"
+
+    library.set_config("vision_model_claude", "")
+    assert library.get_config("vision_model_claude", "from-env") == "from-env"
+    assert "vision_model_claude" not in library.all_config()
+
+
+def test_vision_reads_the_override_on_every_call(tmp_path, monkeypatch):
+    """The point of the admin page: a model change applies to the next photo.
+
+    If this were read at import time, switching the model would need a redeploy
+    and the page would be lying.
+    """
+    import importlib
+    import sys
+
+    sys.path.insert(0, "web")
+    monkeypatch.setenv("JSONCAM_LIBRARY_DIR", str(tmp_path / "lib"))
+    monkeypatch.setenv("JSONCAM_VISION_MODEL", "claude-opus-5")
+    import library
+    import vision
+
+    importlib.reload(library)
+    importlib.reload(vision)
+
+    assert vision.claude_model() == "claude-opus-5"
+    library.set_config("vision_model_claude", "claude-haiku-4-5")
+    assert vision.claude_model() == "claude-haiku-4-5"
+    assert vision.cost_per_photo("claude-haiku-4-5") < vision.cost_per_photo("claude-opus-5")
+
+
+def test_a_broken_config_read_never_stops_captioning(tmp_path, monkeypatch):
+    """Captions are a bonus; a config lookup failing must not take them down."""
+    import sys
+
+    sys.path.insert(0, "web")
+    import vision
+
+    monkeypatch.setattr(vision, "_override", lambda name: (_ for _ in ()).throw(RuntimeError))
+    # _override swallows its own failures, so go through the real one.
+    import importlib
+
+    importlib.reload(vision)
+    monkeypatch.setitem(sys.modules, "library", None)   # import library will fail
+    assert vision.claude_model() == vision.ENV_CLAUDE_MODEL
+
+
+def test_totals_count_libraries_without_naming_them(tmp_path, monkeypatch):
+    """The admin overview must not become a way into somebody's photographs."""
+    library = _lib(tmp_path, monkeypatch)
+    for _ in range(3):
+        lib = library.library_id(library.new_key())
+        _file(library, lib, "a.jpg")
+
+    totals = library.totals()
+    assert totals["libraries"] == 3
+    assert totals["items"] == 3
+    # Nothing in the payload identifies a library or a person.
+    flat = json.dumps(totals)
+    assert "library" not in flat.replace("libraries", "")
+
+
+def test_requeue_failed_only_touches_the_ones_that_gave_up(tmp_path, monkeypatch):
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    dead = _file(library, lib, "dead.jpg")
+    done = _file(library, lib, "done.jpg")
+    library.enqueue_analysis(lib, dead)
+    library.enqueue_analysis(lib, done)
+    for _ in range(library.MAX_ATTEMPTS):
+        library.note_attempt(dead)
+    library.save_analysis(lib, done, {"caption": "x", "tags": [], "text": None,
+                                      "people": 0, "kind": "photo", "model": "t"}, "x")
+
+    assert library.next_pending() == []          # both are out of the queue
+    assert library.requeue_failed() == 1
+    assert [r["item"] for r in library.next_pending()] == [dead]
+    # The finished one stays finished rather than being described twice.
+    assert library.queue_depth(lib) == 1
+
+
+def test_requeue_all_covers_only_the_never_described(tmp_path, monkeypatch):
+    """Turning captioning on affects new uploads; this is the back catalogue.
+
+    It must not re-describe what is already done, because that is somebody's
+    money spent twice for the same answer.
+    """
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    already = _file(library, lib, "already.jpg")
+    never_a = _file(library, lib, "a.jpg")
+    never_b = _file(library, lib, "b.jpg")
+    library.enqueue_analysis(lib, already)
+    library.save_analysis(lib, already, {"caption": "x", "tags": [], "text": None,
+                                         "people": 0, "kind": "photo", "model": "t"}, "x")
+
+    assert library.requeue_all() == 2
+    queued = {r["item"] for r in library.next_pending(limit=10)}
+    assert queued == {never_a, never_b}
+    assert library.requeue_all() == 0            # idempotent
+
+
+def test_requeue_all_skips_the_trash(tmp_path, monkeypatch):
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    gone = _file(library, lib, "gone.jpg")
+    library.trash(lib, gone)
+    assert library.requeue_all() == 0

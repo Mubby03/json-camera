@@ -46,15 +46,53 @@ _effort_ok = {}
 # JSONCAM_VISION_PROVIDER picks one: "claude", "deepseek", or "auto". Auto
 # prefers DeepSeek when its key is present, on the grounds that somebody who
 # went and got a DeepSeek key wants it used.
-PROVIDER = os.environ.get("JSONCAM_VISION_PROVIDER", "auto").strip().lower()
-
-CLAUDE_MODEL = os.environ.get("JSONCAM_VISION_MODEL", "claude-opus-5")
-DEEPSEEK_MODEL = os.environ.get("JSONCAM_DEEPSEEK_MODEL", "deepseek-v4-flash-vision-exp")
+# The environment supplies the default; the admin page can override it at
+# runtime. Read through a helper on every call rather than frozen at import,
+# because switching the captioning model should take effect on the next
+# photograph and not on the next deploy.
+ENV_PROVIDER = os.environ.get("JSONCAM_VISION_PROVIDER", "auto").strip().lower()
+ENV_CLAUDE_MODEL = os.environ.get("JSONCAM_VISION_MODEL", "claude-opus-5")
+ENV_DEEPSEEK_MODEL = os.environ.get("JSONCAM_DEEPSEEK_MODEL",
+                                    "deepseek-v4-flash-vision-exp")
 DEEPSEEK_URL = os.environ.get("JSONCAM_DEEPSEEK_URL",
                               "https://api.deepseek.com/chat/completions")
 
-# Kept for anything that still reads it, and for the settings endpoint.
-MODEL = CLAUDE_MODEL
+# What the admin page is allowed to pick. A free-text model field would let one
+# typo silently disable captioning for everybody, and the failure would look
+# like "no captions" rather than "wrong model name".
+CLAUDE_CHOICES = ("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5")
+DEEPSEEK_CHOICES = ("deepseek-v4-flash-vision-exp",)
+
+# Measured on the preview-sized images this sends, US dollars per photograph.
+# Quoted in the admin page so a model change shows its price before it is made.
+COST = {
+    "claude-opus-5": 0.0060,
+    "claude-sonnet-5": 0.0024,
+    "claude-haiku-4-5": 0.0012,
+    "deepseek-v4-flash-vision-exp": 0.0005,
+}
+
+
+def _override(name):
+    """A runtime override, or None. Never lets a config read break captioning."""
+    try:
+        import library
+
+        return library.get_config(name) or None
+    except Exception:
+        return None
+
+
+def provider_setting():
+    return (_override("vision_provider") or ENV_PROVIDER).strip().lower()
+
+
+def claude_model():
+    return _override("vision_model_claude") or ENV_CLAUDE_MODEL
+
+
+def deepseek_model():
+    return _override("vision_model_deepseek") or ENV_DEEPSEEK_MODEL
 
 # What the model is asked to fill in. `strict`-style schemas mean the answer
 # parses without defensive string handling.
@@ -142,9 +180,10 @@ def active():
     misconfiguration shows up as "captions are off" plus a log line naming the
     provider, rather than quietly falling through to the one that costs more.
     """
-    if PROVIDER == "claude":
+    chosen = provider_setting()
+    if chosen == "claude":
         return "claude" if claude_ready() else None
-    if PROVIDER == "deepseek":
+    if chosen == "deepseek":
         return "deepseek" if deepseek_ready() else None
     if deepseek_ready():
         return "deepseek"
@@ -152,7 +191,11 @@ def active():
 
 
 def model_name(provider=None):
-    return DEEPSEEK_MODEL if (provider or active()) == "deepseek" else CLAUDE_MODEL
+    return deepseek_model() if (provider or active()) == "deepseek" else claude_model()
+
+
+def cost_per_photo(model=None):
+    return COST.get(model or model_name())
 
 
 def available():
@@ -232,6 +275,7 @@ _effort_ok = {}
 def _ask_claude(preview_bytes, media_type):
     import anthropic
 
+    chosen = claude_model()
     client = anthropic.Anthropic()
     message = [{
         "role": "user",
@@ -255,16 +299,16 @@ def _ask_claude(preview_bytes, media_type):
             # Captioning is a description task, not a reasoning one, so the
             # cheapest effort is also the right one here.
             config["effort"] = "low"
-        return client.messages.create(model=CLAUDE_MODEL, max_tokens=1024,
+        return client.messages.create(model=chosen, max_tokens=1024,
                                       output_config=config, messages=message)
 
     try:
-        response = ask(_effort_ok.get(CLAUDE_MODEL, True))
+        response = ask(_effort_ok.get(chosen, True))
     except anthropic.BadRequestError as error:
-        if "effort" not in str(error).lower() or not _effort_ok.get(CLAUDE_MODEL, True):
+        if "effort" not in str(error).lower() or not _effort_ok.get(chosen, True):
             raise
-        log.warning("%s rejected output_config.effort; retrying without it", CLAUDE_MODEL)
-        _effort_ok[CLAUDE_MODEL] = False
+        log.warning("%s rejected output_config.effort; retrying without it", chosen)
+        _effort_ok[chosen] = False
         response = ask(False)
 
     # A safety decline is a real outcome on user-supplied photographs, and it is
@@ -292,7 +336,7 @@ def _ask_deepseek(preview_bytes, media_type):
 
     data_url = f"data:{media_type};base64,{base64.b64encode(preview_bytes).decode('ascii')}"
     body = json.dumps({
-        "model": DEEPSEEK_MODEL,
+        "model": deepseek_model(),
         "max_tokens": 1024,
         # Low creativity: this is description, not writing.
         "temperature": 0.2,

@@ -85,7 +85,7 @@ app.add_middleware(
     # would otherwise be blocked while production worked.
     allow_origin_regex=r"https://[a-z0-9-]+\.vercel\.app",
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["X-Library-Key", "Content-Type"],
+    allow_headers=["X-Library-Key", "X-Admin-Key", "Content-Type"],
     max_age=86400,
 )
 
@@ -151,9 +151,18 @@ def load_model(model_id):
 
 
 def default_model_id():
+    """Which checkpoint new uploads are encoded with.
+
+    Honours the admin override when it names a checkpoint that is actually
+    present, and falls back to the first otherwise: a config value left behind
+    by a checkpoint that has since been removed must not take encoding down.
+    """
     models = discover_models()
     if not models:
         raise HTTPException(503, "no trained checkpoint is available")
+    wanted = library.get_config("codec_model")
+    if wanted and any(m["id"] == wanted for m in models):
+        return wanted
     return models[0]["id"]
 
 
@@ -1137,6 +1146,147 @@ def api_library_delete(item_id: str, key: str = None, forever: bool = False,
         raise HTTPException(404, "no such item")
     return {"deleted": item_id, "forever": False, "recoverable_days": library.TRASH_DAYS,
             "usage": library.usage(lib)}
+
+
+# --------------------------------------------------------------------------
+# admin
+#
+# One key for the whole server, separate from every library key, and it grants
+# something different in kind: how the service behaves, not what is in one
+# person's photographs. Nothing here can read or list a library, and the
+# overview deliberately counts libraries rather than naming them, because the
+# handles are hashes and there is nothing in this design that identifies a
+# person. An admin page that quietly became a way to browse strangers'
+# photographs would be a worse thing than no admin page.
+#
+# Refuses outright when no key is configured, rather than defaulting to open.
+
+ADMIN_KEY = os.environ.get("JSONCAM_ADMIN_KEY", "")
+
+
+def require_admin(header_key, query_key=None):
+    import hmac
+
+    if not ADMIN_KEY:
+        raise HTTPException(503, (
+            "No admin key is configured on this server. Set JSONCAM_ADMIN_KEY and redeploy; "
+            "until then there is deliberately no way in."))
+    supplied = header_key or query_key or ""
+    if not supplied or not hmac.compare_digest(supplied, ADMIN_KEY):
+        raise HTTPException(401, "wrong admin key")
+    return True
+
+
+@app.get("/api/admin/overview")
+def api_admin_overview(key: str = None, x_admin_key: str = Header(None)):
+    """Everything the admin page needs in one request."""
+    require_admin(x_admin_key, key)
+    provider = vision.active()
+    return {
+        "totals": library.totals(),
+        "capabilities": {
+            "heic": HEIF_OK,
+            "faces": faces.available(),
+            "captions": vision.available(),
+            "claude_key": vision.claude_ready(),
+            "deepseek_key": vision.deepseek_ready(),
+        },
+        "vision": {
+            "provider": provider,
+            "provider_setting": vision.provider_setting(),
+            "model": vision.model_name(),
+            "cost_per_photo": vision.cost_per_photo(),
+            "claude_choices": list(vision.CLAUDE_CHOICES),
+            "deepseek_choices": list(vision.DEEPSEEK_CHOICES),
+            "costs": vision.COST,
+            "env_provider": vision.ENV_PROVIDER,
+            "env_claude_model": vision.ENV_CLAUDE_MODEL,
+            "env_deepseek_model": vision.ENV_DEEPSEEK_MODEL,
+        },
+        "faces": {
+            "available": faces.available(),
+            "match": faces.MATCH,
+            "margin": faces.MARGIN,
+            "min_edge": faces.MIN_EDGE,
+            "confidence": faces.CONFIDENCE,
+        },
+        "codec": {
+            "models": discover_models(),
+            "default": default_model_id(),
+            "max_side": LIBRARY_MAX_SIDE,
+            "max_upload": MAX_UPLOAD,
+            "batch_max": BATCH_MAX,
+            "max_lossless_mp": MAX_LOSSLESS_MP,
+        },
+        "limits": {
+            "max_items": library.MAX_ITEMS,
+            "max_bytes": library.MAX_BYTES,
+            "trash_days": library.TRASH_DAYS,
+        },
+        "overrides": library.all_config(),
+    }
+
+
+# Only these can be set from the web, and each is validated. A free-text
+# config endpoint is a way to break the service from a browser.
+ADMIN_SETTABLE = {
+    "vision_provider": ("auto", "claude", "deepseek"),
+    "vision_model_claude": vision.CLAUDE_CHOICES,
+    "vision_model_deepseek": vision.DEEPSEEK_CHOICES,
+    "codec_model": None,        # validated against the checkpoints actually present
+}
+
+
+@app.post("/api/admin/config")
+def api_admin_config(name: str, value: str = "", key: str = None,
+                     x_admin_key: str = Header(None)):
+    """Set one override, or clear it with an empty value.
+
+    Clearing is how you go back to the deployed default rather than having to
+    remember what it was.
+    """
+    require_admin(x_admin_key, key)
+    if name not in ADMIN_SETTABLE:
+        raise HTTPException(400, f"{name} is not a setting this endpoint can change")
+
+    if value:
+        allowed = ADMIN_SETTABLE[name]
+        if name == "codec_model":
+            allowed = tuple(m["id"] for m in discover_models())
+        if allowed and value not in allowed:
+            raise HTTPException(400, (
+                f"{value!r} is not one of {list(allowed)}. Refused rather than accepted, "
+                f"because a model name that does not exist looks exactly like a feature "
+                f"that stopped working."))
+
+    stored = library.set_config(name, value)
+    return {"name": name, "value": stored,
+            "cleared": stored is None,
+            "vision": {"provider": vision.active(), "model": vision.model_name(),
+                       "cost_per_photo": vision.cost_per_photo()}}
+
+
+@app.post("/api/admin/requeue")
+def api_admin_requeue(what: str = "failed", key: str = None,
+                      x_admin_key: str = Header(None)):
+    """Put photographs back in the captioning queue.
+
+    `failed` retries the ones that used up their attempts, which is what you
+    want after fixing a missing key. `all` queues photographs that were never
+    described at all, which is the back catalogue and costs real money, so it
+    reports how many it queued before any of it runs.
+    """
+    require_admin(x_admin_key, key)
+    if what == "failed":
+        count = library.requeue_failed()
+    elif what == "all":
+        count = library.requeue_all()
+    else:
+        raise HTTPException(400, "what must be 'failed' or 'all'")
+    estimate = vision.cost_per_photo()
+    return {"queued": count, "what": what,
+            "estimated_cost": round(count * estimate, 2) if estimate else None,
+            "model": vision.model_name()}
 
 
 # --------------------------------------------------------------------------

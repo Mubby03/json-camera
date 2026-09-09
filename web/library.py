@@ -135,6 +135,15 @@ CREATE TABLE IF NOT EXISTS people (
 );
 CREATE INDEX IF NOT EXISTS people_by_library ON people (library, face_count DESC);
 
+-- Runtime configuration, so the admin page can change how this behaves without
+-- a redeploy. Env vars stay the default and the floor: an override only exists
+-- once somebody sets one, and clearing it hands control back to the env.
+CREATE TABLE IF NOT EXISTS config (
+    name       TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at REAL
+);
+
 -- Per-library switches. Both default off: the vision pass costs the operator
 -- money per photograph and faces are biometric data about people who never
 -- agreed to anything, so neither can be an assumption.
@@ -352,6 +361,130 @@ def place_for(lat, lon):
             conn.execute("INSERT OR REPLACE INTO places (cell, name, asked_at) VALUES (?, ?, ?)",
                          (cell, name, time.time()))
     return name
+
+
+# --------------------------------------------------------------------------
+# runtime configuration
+#
+# Everything here has an environment variable as its default. The override is
+# what the admin page writes, and deleting the override is how you go back to
+# the deployed default rather than having to guess what it was.
+#
+# Read on every call rather than cached, because the point of it is that
+# changing the captioning model takes effect on the next photograph and not on
+# the next deploy. A SQLite read on the same open file is nanoseconds, and the
+# alternative is a stale value nobody can explain.
+
+
+def get_config(name, default=None):
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM config WHERE name = ?", (name,)).fetchone()
+    return row["value"] if row and row["value"] is not None else default
+
+
+def all_config():
+    with _connect() as conn:
+        rows = conn.execute("SELECT name, value, updated_at FROM config").fetchall()
+    return {r["name"]: r["value"] for r in rows}
+
+
+def set_config(name, value):
+    """Set an override, or clear it by passing None or an empty string."""
+    with _connect() as conn:
+        if value is None or value == "":
+            conn.execute("DELETE FROM config WHERE name = ?", (name,))
+            return None
+        conn.execute(
+            "INSERT INTO config (name, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET value = ?, updated_at = ?",
+            (name, str(value), time.time(), str(value), time.time()))
+    return str(value)
+
+
+def totals():
+    """Every library at once, for the admin overview.
+
+    Counts libraries rather than naming them: the handles are hashes and there
+    is nothing here that identifies a person, which is the point of the design
+    and should stay true of the admin page too.
+    """
+    with _connect() as conn:
+        items = conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(json_bytes), 0) AS b, "
+            "       COUNT(DISTINCT library) AS libraries, "
+            "       SUM(CASE WHEN deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS trashed, "
+            "       SUM(CASE WHEN favourite = 1 THEN 1 ELSE 0 END) AS favourites "
+            "FROM items").fetchone()
+        described = conn.execute(
+            "SELECT COUNT(*) AS done FROM analysis WHERE done_at IS NOT NULL").fetchone()
+        waiting = conn.execute(
+            "SELECT COUNT(*) AS n FROM analysis a JOIN items i ON i.id = a.item "
+            "WHERE a.done_at IS NULL AND a.attempts < ? AND i.deleted_at IS NULL",
+            (MAX_ATTEMPTS,)).fetchone()
+        gave_up = conn.execute(
+            "SELECT COUNT(*) AS n FROM analysis WHERE done_at IS NULL AND attempts >= ?",
+            (MAX_ATTEMPTS,)).fetchone()
+        faces_seen = conn.execute("SELECT COUNT(*) AS n FROM faces").fetchone()
+        people_seen = conn.execute("SELECT COUNT(*) AS n FROM people").fetchone()
+        named = conn.execute(
+            "SELECT COUNT(*) AS n FROM people WHERE name IS NOT NULL").fetchone()
+        placed = conn.execute(
+            "SELECT COUNT(*) AS n FROM places").fetchone()
+        models = conn.execute(
+            "SELECT model, COUNT(*) AS n FROM analysis WHERE model IS NOT NULL "
+            "GROUP BY model ORDER BY n DESC").fetchall()
+
+    return {
+        "libraries": items["libraries"] or 0,
+        "items": items["n"] or 0,
+        "bytes": items["b"] or 0,
+        "trashed": items["trashed"] or 0,
+        "favourites": items["favourites"] or 0,
+        "described": described["done"] or 0,
+        "waiting": waiting["n"] or 0,
+        "gave_up": gave_up["n"] or 0,
+        "faces": faces_seen["n"] or 0,
+        "people": people_seen["n"] or 0,
+        "people_named": named["n"] or 0,
+        "places_cached": placed["n"] or 0,
+        "by_model": [{"model": r["model"], "photos": r["n"]} for r in models],
+        "places_pending": places_pending(),
+    }
+
+
+def requeue_failed():
+    """Give up-for-dead captions another chance.
+
+    Three attempts is the right default and the wrong answer after the operator
+    has just fixed the thing that was breaking them, which is usually a missing
+    key or an unpaid bill.
+    """
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE analysis SET attempts = 0 WHERE done_at IS NULL AND attempts >= ?",
+            (MAX_ATTEMPTS,))
+    return cur.rowcount
+
+
+def requeue_all(lib=None):
+    """Describe photographs that have never been queued at all.
+
+    What somebody wants after turning captioning on: the switch only affects new
+    uploads, and this is the deliberate, separately-priced way to cover the back
+    catalogue.
+    """
+    with _connect() as conn:
+        where = "WHERE i.deleted_at IS NULL" + (" AND i.library = ?" if lib else "")
+        args = (lib,) if lib else ()
+        rows = conn.execute(
+            f"SELECT i.id, i.library FROM items i "
+            f"LEFT JOIN analysis a ON a.item = i.id {where} AND a.item IS NULL",
+            args).fetchall()
+        for row in rows:
+            conn.execute(
+                "INSERT OR IGNORE INTO analysis (item, library, attempts) VALUES (?, ?, 0)",
+                (row["id"], row["library"]))
+    return len(rows)
 
 
 # --------------------------------------------------------------------------

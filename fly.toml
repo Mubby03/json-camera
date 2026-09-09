@@ -32,6 +32,9 @@ primary_region = "jnb"
   # machine stops when idle and its rootfs is replaced on every deploy, so
   # anything not under /data is lost the next time either happens.
   JSONCAM_LIBRARY_DIR = "/data/library"
+  # The admin page needs JSONCAM_ADMIN_KEY, which is a secret rather than an
+  # env var here: `fly secrets set JSONCAM_ADMIN_KEY=...`. Without it the admin
+  # endpoints refuse outright rather than defaulting to open.
   # The gallery is served from the portfolio, so it is a cross-origin caller and
   # has to be named. A wildcard would let any page a visitor has open read their
   # library, since these requests carry a key.
