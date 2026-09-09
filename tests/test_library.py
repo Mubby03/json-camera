@@ -409,3 +409,131 @@ def test_the_key_itself_is_never_stored():
     assert handle != key
     # Same key, same library, every time: the handle is a pure function of it.
     assert handle == library.library_id(key)
+
+
+# --------------------------------------------------------------------------
+# views, favourites and the trash
+
+
+def _lib(tmp_path, monkeypatch):
+    """A library module pointed at a temp directory."""
+    import importlib
+    import sys
+
+    sys.path.insert(0, "web")
+    monkeypatch.setenv("JSONCAM_LIBRARY_DIR", str(tmp_path / "lib"))
+    import library
+
+    importlib.reload(library)
+    return library
+
+
+def _file(library, lib, name, favourite=False):
+    doc = {"format": "json-camera/1", "image": {"name": name, "width": 4, "height": 4},
+           "codec": {"bitstream_bytes": 10}, "meta": {}}
+    item = library.add(lib, doc, json.dumps(doc).encode())
+    if favourite:
+        library.set_favourite(lib, item, True)
+    return item
+
+
+def test_delete_is_recoverable_not_final(tmp_path, monkeypatch):
+    """The one mistake a photo library must never make permanent on one tap."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    item = _file(library, lib, "keep.jpg")
+
+    assert library.trash(lib, item) is True
+    assert [i["id"] for i in library.listing(lib, view="all")] == []
+    assert [i["id"] for i in library.listing(lib, view="trash")] == [item]
+    # The payload is still on disk, which is what makes the restore real.
+    assert library.payload(lib, item) is not None
+
+    assert library.restore(lib, item) is True
+    assert [i["id"] for i in library.listing(lib, view="all")] == [item]
+
+
+def test_trashed_photos_still_count_against_the_quota(tmp_path, monkeypatch):
+    """They occupy the volume, so hiding them would let somebody fill the disk."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    item = _file(library, lib, "a.jpg")
+    library.trash(lib, item)
+
+    usage = library.usage(lib)
+    assert usage["items"] == 0
+    assert usage["trashed"] == 1
+
+
+def test_purge_removes_the_row_and_the_bytes(tmp_path, monkeypatch):
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    item = _file(library, lib, "gone.jpg")
+    library.trash(lib, item)
+
+    assert library.purge(lib, item_id=item) == [item]
+    assert library.payload(lib, item) is None
+    assert library.listing(lib, view="trash") == []
+
+
+def test_purge_spares_anything_inside_its_grace_period(tmp_path, monkeypatch):
+    """A sweep on every listing must not delete what was trashed a moment ago."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    item = _file(library, lib, "recent.jpg")
+    library.trash(lib, item)
+
+    assert library.purge(lib) == []                      # default 30 day window
+    assert library.purge(lib, older_than_days=0) == [item]
+
+
+def test_a_live_photo_cannot_be_purged(tmp_path, monkeypatch):
+    """Purge only ever touches the trash, so it can never skip the grace period."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    item = _file(library, lib, "live.jpg")
+
+    assert library.purge(lib, item_id=item) == []
+    assert library.payload(lib, item) is not None
+
+
+def test_views_do_not_leak_between_libraries(tmp_path, monkeypatch):
+    library = _lib(tmp_path, monkeypatch)
+    mine = library.library_id(library.new_key())
+    yours = library.library_id(library.new_key())
+    _file(library, mine, "mine.jpg", favourite=True)
+    _file(library, yours, "yours.jpg", favourite=True)
+
+    assert len(library.listing(mine, view="favourites")) == 1
+    assert len(library.listing(yours, view="favourites")) == 1
+    assert len(library.all_ids(mine)) == 1
+
+
+def test_place_names_are_cached_on_a_grid(tmp_path, monkeypatch):
+    """Two photos from the same spot must not be two network calls."""
+    library = _lib(tmp_path, monkeypatch)
+
+    calls = []
+
+    def fake(lat, lon):
+        calls.append((lat, lon))
+        return {"address": {"suburb": "Lekki", "city": "Lagos", "country": "Nigeria"}}
+
+    # Seed the cache the way a real lookup would, then confirm a nearby
+    # coordinate in the same cell never asks again.
+    assert library._shorten(fake(6.4540, 3.4092)) == "Lekki, Lagos, Nigeria"
+    with library._connect() as conn:
+        conn.execute("INSERT OR REPLACE INTO places (cell, name, asked_at) VALUES (?, ?, ?)",
+                     (library._cell(6.4540, 3.4092), "Lekki, Lagos, Nigeria", 0))
+
+    before = len(calls)
+    assert library.place_for(6.45402, 3.40921) == "Lekki, Lagos, Nigeria"
+    assert len(calls) == before          # answered from the cache, no lookup
+
+
+def test_place_names_drop_repeated_components(tmp_path, monkeypatch):
+    """"Lagos, Lagos, Nigeria" reads like a bug, because it is one."""
+    library = _lib(tmp_path, monkeypatch)
+    assert library._shorten(
+        {"address": {"suburb": "Lagos", "city": "Lagos", "country": "Nigeria"}}
+    ) == "Lagos, Nigeria"

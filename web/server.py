@@ -649,11 +649,42 @@ async def api_library_upload(
 
 @app.get("/api/library/items")
 def api_library_items(key: str = None, limit: int = 500, offset: int = 0,
-                      x_library_key: str = Header(None)):
+                      view: str = "all", x_library_key: str = Header(None)):
     lib = require_key(x_library_key, None, key)
-    items = library.listing(lib, limit=min(max(limit, 1), 1000), offset=max(offset, 0))
-    return {"items": items, "usage": library.usage(lib),
-            "max_side": LIBRARY_MAX_SIDE}
+    if view not in library.VIEWS:
+        raise HTTPException(400, f"no such view: {view}")
+    # Sweep anything past its thirty days before answering, so the trash count
+    # the gallery shows is the trash that actually still exists.
+    library.purge(lib)
+    items = library.listing(lib, limit=min(max(limit, 1), 1000), offset=max(offset, 0),
+                            view=view)
+    return {"items": items, "usage": library.usage(lib), "view": view,
+            "trash_days": library.TRASH_DAYS, "max_side": LIBRARY_MAX_SIDE}
+
+
+@app.post("/api/library/item/{item_id}/favourite")
+def api_library_favourite(item_id: str, on: bool = True, key: str = None,
+                          x_library_key: str = Header(None)):
+    lib = require_key(x_library_key, None, key)
+    if not library.set_favourite(lib, item_id, on):
+        raise HTTPException(404, "no such item")
+    return {"id": item_id, "favourite": on, "usage": library.usage(lib)}
+
+
+@app.post("/api/library/item/{item_id}/restore")
+def api_library_restore(item_id: str, key: str = None, x_library_key: str = Header(None)):
+    lib = require_key(x_library_key, None, key)
+    if not library.restore(lib, item_id):
+        raise HTTPException(404, "no such item")
+    return {"id": item_id, "usage": library.usage(lib)}
+
+
+@app.post("/api/library/trash/empty")
+def api_library_empty_trash(key: str = None, x_library_key: str = Header(None)):
+    """Purge everything in the trash now, rather than waiting out the month."""
+    lib = require_key(x_library_key, None, key)
+    gone = library.purge(lib, older_than_days=0)
+    return {"purged": len(gone), "usage": library.usage(lib)}
 
 
 @app.get("/api/library/thumb/{item_id}")
@@ -747,7 +778,8 @@ BULK_MAX = int(os.environ.get("JSONCAM_BULK_MAX", "40"))
 
 
 @app.get("/api/library/zip")
-def api_library_zip(ids: str, key: str = None, x_library_key: str = Header(None)):
+def api_library_zip(ids: str = None, key: str = None, view: str = None,
+                    kind: str = "photos", x_library_key: str = Header(None)):
     """Decode a selection and stream it back as one archive.
 
     Decoding is seconds per photograph, so a selection of thirty is minutes of
@@ -756,9 +788,19 @@ def api_library_zip(ids: str, key: str = None, x_library_key: str = Header(None)
     is decoded, appended, and flushed before the next one starts.
     """
     lib = require_key(x_library_key, None, key)
-    wanted = [i for i in (ids or "").split(",") if i][:BULK_MAX]
+    if view:
+        # The whole library. Only allowed for `kind=files`, which does no
+        # decoding: asking a single core to decode two thousand photographs
+        # inside one request is not a download, it is an outage.
+        if kind != "files":
+            raise HTTPException(400, (
+                "Downloading a whole library as photos would take hours. Use kind=files for the "
+                "complete backup, which needs no decoding, or select a batch."))
+        wanted = library.all_ids(lib, view=view)
+    else:
+        wanted = [i for i in (ids or "").split(",") if i][:BULK_MAX]
     if not wanted:
-        raise HTTPException(400, "no photos selected")
+        raise HTTPException(400, "nothing selected")
 
     rows = [(i, library.get(lib, i)) for i in wanted]
     rows = [(i, r) for i, r in rows if r]
@@ -775,6 +817,17 @@ def api_library_zip(ids: str, key: str = None, x_library_key: str = Header(None)
                 body = library.payload(lib, item_id)
                 if body is None:
                     continue
+
+                stem_only = safe_stem(row["name"] or item_id)
+                if kind == "files":
+                    # The .json exactly as stored: the real backup of a library,
+                    # and instant, because nothing is decoded.
+                    seen[stem_only] = seen.get(stem_only, 0) + 1
+                    suffix = "" if seen[stem_only] == 1 else f" ({seen[stem_only]})"
+                    archive.writestr(f"{stem_only}{suffix}.json", body)
+                    yield sink.drain()
+                    continue
+
                 try:
                     doc = json.loads(body)
                     if doc.get("format") == lossless.FORMAT:
@@ -797,17 +850,31 @@ def api_library_zip(ids: str, key: str = None, x_library_key: str = Header(None)
         yield sink.drain()
 
     stamp = time.strftime("%Y-%m-%d")
+    label = "library" if kind == "files" else "photos"
     return StreamingResponse(
         stream(), media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="json-camera {stamp}.zip"'})
+        headers={"Content-Disposition":
+                 f'attachment; filename="json-camera {label} {stamp}.zip"'})
 
 
 @app.delete("/api/library/item/{item_id}")
-def api_library_delete(item_id: str, key: str = None, x_library_key: str = Header(None)):
+def api_library_delete(item_id: str, key: str = None, forever: bool = False,
+                       x_library_key: str = Header(None)):
+    """Move a photograph to the trash, or with `forever`, actually delete it.
+
+    Soft by default. Hard deleting on the first tap is the one mistake in a
+    photo library that cannot be walked back, and a month of grace costs
+    nothing but disk that the quota already accounts for.
+    """
     lib = require_key(x_library_key, None, key)
-    if not library.remove(lib, item_id):
+    if forever:
+        if not library.purge(lib, item_id=item_id):
+            raise HTTPException(404, "that is not in the trash")
+        return {"deleted": item_id, "forever": True, "usage": library.usage(lib)}
+    if not library.trash(lib, item_id):
         raise HTTPException(404, "no such item")
-    return {"deleted": item_id, "usage": library.usage(lib)}
+    return {"deleted": item_id, "forever": False, "recoverable_days": library.TRASH_DAYS,
+            "usage": library.usage(lib)}
 
 
 # --------------------------------------------------------------------------

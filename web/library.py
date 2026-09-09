@@ -63,13 +63,35 @@ CREATE TABLE IF NOT EXISTS items (
     fingerprint  TEXT,
     preview      BLOB,
     preview_type TEXT,
-    meta         TEXT
+    meta         TEXT,
+    favourite    INTEGER DEFAULT 0,
+    -- Soft delete, the way every photo app does it: a deleted photo is out of
+    -- the way but recoverable for a month. Hard deleting on the first tap is
+    -- the one mistake in a photo library that cannot be walked back.
+    deleted_at   REAL,
+    place        TEXT
 );
 -- The gallery's only ordering is newest-first within one library, and its only
 -- filter is the library, so this one index answers every query the app makes.
 CREATE INDEX IF NOT EXISTS items_by_library
-    ON items (library, captured_at DESC, stored_at DESC);
+    ON items (library, deleted_at, captured_at DESC, stored_at DESC);
+
+-- Reverse geocoding is rate limited and the same coordinates recur constantly,
+-- so answers are cached on a rounded grid rather than asked for twice.
+CREATE TABLE IF NOT EXISTS places (
+    cell    TEXT PRIMARY KEY,
+    name    TEXT,
+    asked_at REAL
+);
 """
+
+# Columns added after the first release. SQLite has no ADD COLUMN IF NOT EXISTS,
+# so this is the idiom: try each, ignore the one error that means "already there".
+MIGRATIONS = (
+    "ALTER TABLE items ADD COLUMN favourite INTEGER DEFAULT 0",
+    "ALTER TABLE items ADD COLUMN deleted_at REAL",
+    "ALTER TABLE items ADD COLUMN place TEXT",
+)
 
 
 def _connect():
@@ -79,6 +101,11 @@ def _connect():
     # WAL so a long upload does not block the gallery reading in another request.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    for statement in MIGRATIONS:
+        try:
+            conn.execute(statement)
+        except sqlite3.OperationalError:
+            pass                      # the column is already there
     return conn
 
 
@@ -148,16 +175,115 @@ def inspect_key(key):
     return "ok" if check == _check_chars(body) else "typo"
 
 
+# --------------------------------------------------------------------------
+# place names
+#
+# Coordinates are not an answer to "where was this". Nobody recognises
+# 6.4540, 3.4092; everybody recognises Lekki. So the numbers get turned into a
+# name once, and the name is what the gallery shows.
+#
+# OpenStreetMap's Nominatim does this for free and asks three things in return:
+# one request a second, a real User-Agent, and no repeat lookups. The cache
+# below is how the third is honoured, and it is what makes this cheap: a day out
+# is forty photographs within a few hundred metres of each other, so rounding
+# the coordinates to a grid turns forty lookups into one.
+
+NOMINATIM = "https://nominatim.openstreetmap.org/reverse"
+# Three decimal places is about 110 metres, which is the right grain: finer
+# splits one beach into six cells, coarser merges neighbouring districts.
+PLACE_GRID = 3
+_last_lookup = [0.0]
+
+
+def _cell(lat, lon):
+    return f"{round(lat, PLACE_GRID)},{round(lon, PLACE_GRID)}"
+
+
+def _shorten(payload):
+    """Nominatim returns a full postal address. Keep the part people say aloud."""
+    address = (payload or {}).get("address") or {}
+    local = (address.get("suburb") or address.get("neighbourhood")
+             or address.get("village") or address.get("town")
+             or address.get("city_district") or address.get("hamlet"))
+    city = address.get("city") or address.get("town") or address.get("county")
+    country = address.get("country")
+    parts = [p for p in (local, city, country) if p]
+    # Drop a repeat when the suburb and the city carry the same name.
+    trimmed = []
+    for part in parts:
+        if part not in trimmed:
+            trimmed.append(part)
+    return ", ".join(trimmed[:3]) or (payload or {}).get("display_name")
+
+
+def place_for(lat, lon):
+    """A human place name for a coordinate, cached, or None.
+
+    Never raises and never blocks for long: a photograph must still upload if
+    OpenStreetMap is slow or down, so a failure here just means the gallery
+    shows coordinates for that one instead of a name.
+    """
+    if lat is None or lon is None:
+        return None
+    cell = _cell(lat, lon)
+    with _connect() as conn:
+        row = conn.execute("SELECT name FROM places WHERE cell = ?", (cell,)).fetchone()
+    if row:
+        return row["name"]
+
+    try:
+        import json as _json
+        import urllib.parse
+        import urllib.request
+
+        # Their usage policy is one request per second, and this process is the
+        # only caller, so a sleep here is enough to honour it.
+        wait = 1.05 - (time.time() - _last_lookup[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_lookup[0] = time.time()
+
+        query = urllib.parse.urlencode({
+            "lat": f"{lat:.5f}", "lon": f"{lon:.5f}",
+            "format": "jsonv2", "zoom": "14", "addressdetails": "1",
+        })
+        request = urllib.request.Request(
+            f"{NOMINATIM}?{query}",
+            headers={"User-Agent": "json-camera/1.0 (https://mubby.space/json-camera)"})
+        with urllib.request.urlopen(request, timeout=6) as response:
+            name = _shorten(_json.loads(response.read().decode("utf-8")))
+    except Exception:
+        return None
+
+    if name:
+        with _connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO places (cell, name, asked_at) VALUES (?, ?, ?)",
+                         (cell, name, time.time()))
+    return name
+
+
 def _payload_path(lib, item_id):
     return LIBRARY_DIR / lib[:2] / lib / f"{item_id}.json"
 
 
 def usage(lib):
     with _connect() as conn:
-        row = conn.execute(
+        live = conn.execute(
             "SELECT COUNT(*) AS n, COALESCE(SUM(json_bytes), 0) AS b "
-            "FROM items WHERE library = ?", (lib,)).fetchone()
-    return {"items": row["n"], "bytes": row["b"],
+            "FROM items WHERE library = ? AND deleted_at IS NULL", (lib,)).fetchone()
+        extra = conn.execute(
+            "SELECT COUNT(*) AS trashed, "
+            "       COALESCE(SUM(CASE WHEN favourite = 1 THEN 1 ELSE 0 END), 0) AS favourites "
+            "FROM items WHERE library = ? AND (deleted_at IS NULL OR favourite = 0)",
+            (lib,)).fetchone()
+        trashed = conn.execute(
+            "SELECT COUNT(*) AS n FROM items WHERE library = ? AND deleted_at IS NOT NULL",
+            (lib,)).fetchone()["n"]
+    # Deleted photos still occupy the volume, so they count against the quota.
+    # Hiding that would let somebody fill the disk with things they believe are
+    # already gone.
+    return {"items": live["n"], "bytes": live["b"],
+            "trashed": trashed, "favourites": extra["favourites"],
             "max_items": MAX_ITEMS, "max_bytes": MAX_BYTES}
 
 
@@ -201,6 +327,7 @@ def add(lib, doc, raw_json, source_bytes=None):
         "lens": info.get("lens"),
         "lat": place.get("lat"),
         "lon": place.get("lon"),
+        "place": place_for(place.get("lat"), place.get("lon")),
         "fingerprint": (doc.get("model") or {}).get("fingerprint"),
         "preview": blob,
         "preview_type": preview.get("format"),
@@ -213,22 +340,105 @@ def add(lib, doc, raw_json, source_bytes=None):
     return item_id
 
 
-def listing(lib, limit=500, offset=0):
+COLUMNS = ("id, name, stored_at, captured_at, width, height, json_bytes, "
+           "source_bytes, lossless, camera, lens, lat, lon, place, favourite, "
+           "deleted_at, preview IS NOT NULL AS has_preview")
+
+# The three views the gallery offers. Kept here rather than assembled from a
+# caller's string so no request can invent its own WHERE clause.
+VIEWS = {
+    "all": "deleted_at IS NULL",
+    "favourites": "deleted_at IS NULL AND favourite = 1",
+    "trash": "deleted_at IS NOT NULL",
+}
+
+
+def listing(lib, limit=500, offset=0, view="all"):
     """Everything the grid needs, without the payloads or the thumbnails.
 
     Thumbnails are a separate request each so the browser caches them
     individually and a listing stays small enough to parse on a phone.
     """
+    where = VIEWS.get(view, VIEWS["all"])
+    order = ("deleted_at DESC" if view == "trash"
+             else "COALESCE(captured_at, datetime(stored_at, 'unixepoch')) DESC, stored_at DESC")
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, name, stored_at, captured_at, width, height, json_bytes, "
-            "       source_bytes, lossless, camera, lens, lat, lon, "
-            "       preview IS NOT NULL AS has_preview "
-            "FROM items WHERE library = ? "
-            "ORDER BY COALESCE(captured_at, datetime(stored_at, 'unixepoch')) DESC, "
-            "         stored_at DESC LIMIT ? OFFSET ?",
+            f"SELECT {COLUMNS} FROM items WHERE library = ? AND {where} "
+            f"ORDER BY {order} LIMIT ? OFFSET ?",
             (lib, limit, offset)).fetchall()
     return [dict(r) for r in rows]
+
+
+def all_ids(lib, view="all"):
+    """Every id in a view, for the download-everything path."""
+    where = VIEWS.get(view, VIEWS["all"])
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT id FROM items WHERE library = ? AND {where} "
+            f"ORDER BY COALESCE(captured_at, datetime(stored_at, 'unixepoch')) DESC",
+            (lib,)).fetchall()
+    return [r["id"] for r in rows]
+
+
+def set_favourite(lib, item_id, on):
+    with _connect() as conn:
+        cur = conn.execute("UPDATE items SET favourite = ? WHERE library = ? AND id = ?",
+                           (1 if on else 0, lib, item_id))
+    return cur.rowcount > 0
+
+
+def trash(lib, item_id):
+    """Soft delete. Recoverable until it is purged."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE items SET deleted_at = ? WHERE library = ? AND id = ? AND deleted_at IS NULL",
+            (time.time(), lib, item_id))
+    return cur.rowcount > 0
+
+
+def restore(lib, item_id):
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE items SET deleted_at = NULL WHERE library = ? AND id = ?", (lib, item_id))
+    return cur.rowcount > 0
+
+
+# How long a deleted photograph stays recoverable. Thirty days is what people
+# already expect from every photo app they have used.
+TRASH_DAYS = int(os.environ.get("JSONCAM_TRASH_DAYS", "30"))
+
+
+def purge(lib, item_id=None, older_than_days=None):
+    """Delete for real: the row and the payload on disk.
+
+    With no item id, sweeps everything in the trash past its expiry, which is
+    what keeps deleted photographs from occupying the volume forever.
+    """
+    with _connect() as conn:
+        if item_id:
+            rows = conn.execute(
+                "SELECT id FROM items WHERE library = ? AND id = ? AND deleted_at IS NOT NULL",
+                (lib, item_id)).fetchall()
+        else:
+            # `is None`, not `or`: older_than_days=0 means "everything, now",
+            # which is exactly what Empty Trash asks for, and `or` would read
+            # that falsy zero as "unset" and quietly apply the 30 day window
+            # instead, so the button would appear to do nothing.
+            days = TRASH_DAYS if older_than_days is None else older_than_days
+            cutoff = time.time() - days * 86400
+            rows = conn.execute(
+                "SELECT id FROM items WHERE library = ? AND deleted_at IS NOT NULL "
+                "AND deleted_at < ?", (lib, cutoff)).fetchall()
+        gone = [r["id"] for r in rows]
+        for one in gone:
+            conn.execute("DELETE FROM items WHERE library = ? AND id = ?", (lib, one))
+    for one in gone:
+        try:
+            _payload_path(lib, one).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return gone
 
 
 def get(lib, item_id):
@@ -243,15 +453,3 @@ def payload(lib, item_id):
     path = _payload_path(lib, item_id)
     return path.read_bytes() if path.exists() else None
 
-
-def remove(lib, item_id):
-    with _connect() as conn:
-        cur = conn.execute("DELETE FROM items WHERE library = ? AND id = ?", (lib, item_id))
-        gone = cur.rowcount > 0
-    if gone:
-        path = _payload_path(lib, item_id)
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
-    return gone
