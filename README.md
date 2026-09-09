@@ -93,6 +93,77 @@ doc = jsoncam.encode_lossless("photo.png")   # nothing discarded, ~20% under PNG
 jsoncam.decode(doc, "exact.png")             # decode detects the format itself
 ```
 
+## Keeping photographs in it, not just compressing them
+
+A codec is not a place to keep pictures. A `.json` photograph cannot be opened by
+Finder, by Explorer, by an iPhone or by whoever you send it to, and until
+recently it carried no capture date, so a folder of ten thousand of them was a
+pile of files nobody could look through or put in any order. That gap, rather
+than the compression, is what made the format unusable as an archive.
+
+Two small blocks in the header close it, and both are additive: a decoder that
+predates them ignores two extra keys.
+
+```json
+{
+  "meta": {
+    "captured_at": "2026-07-04T18:12:09",
+    "camera": "Apple iPhone 15 Pro",
+    "lens": "iPhone 15 Pro back camera 6.765mm f/1.78",
+    "gps": {"lat": 6.454028, "lon": 3.409222}
+  },
+  "preview": {"format": "webp", "width": 320, "height": 213, "bytes": 11204, "data": "…"}
+}
+```
+
+**The preview is the important one.** It is a 320 pixel WebP of the picture, and
+it means the photograph can be *seen* without the decoder, the checkpoint or
+torch: a gallery, a Finder thumbnail and a phone all read it with code they
+already have. It costs about 15% of the bitstream, measured on DIV2K at 1600px,
+and `stats()` reports it as `preview_bytes` rather than letting it hide inside
+the container overhead. 512px was the first thing tried and cost 40%, which is
+not a preview, it is a second copy of the photograph.
+
+**The metadata is what makes a library sortable at all.** Capture date, camera,
+lens and location, pulled out of EXIF into plain JSON types. `--no-gps` keeps
+the date and drops the coordinates, which is the switch you want before handing
+files to anybody else.
+
+A folder at a time, resumably, surviving the one corrupt file in the middle:
+
+```bash
+jsoncam convert photos/ --out library/       # mirrors the tree
+jsoncam restore library/ --out back/         # and all the way back out
+jsoncam restore library/ --out sheet/ --previews   # thumbnails, no checkpoint needed
+```
+
+`restore` writes the capture date, camera and location back into each JPEG's own
+EXIF and sets the file's modified time to when the shutter opened, so a restored
+folder sorts correctly in Finder and Explorer. `--previews` is the rescue path
+for when the checkpoint is gone: lossy, but the difference between a lossy copy
+and nothing.
+
+The exit matters more than it sounds. A format you cannot leave is a place to
+lose photographs, not a place to keep them.
+
+### A phone library on top of it
+
+`web/library.py` and the `/api/library/*` endpoints are a keyed photo library:
+an iPhone shortcut posts a whole share sheet selection into it one photograph at
+a time, and a gallery at [mubby.space/json-camera](https://mubby.space/json-camera)
+reads it back. A library is addressed by a secret, never an account, and only
+the hash of that secret is stored.
+
+The gallery draws itself entirely from the embedded previews, so filling a
+screen with sixty photographs costs a few hundred kilobytes and no inference at
+all. The model runs only when somebody opens one picture or asks for a selection
+back as real files. Setup, including an Android route and the plain `curl` loop
+that works anywhere, is at
+[mubby.space/json-camera/setup](https://mubby.space/json-camera/setup).
+
+Note that HEIC, which is what every iPhone shoots, needs `pillow-heif`. Install
+`jsoncam[heif]` or a phone photo fails as "not an image we can read".
+
 ## Training on the latents instead of the pixels
 
 The part worth stealing. A model does not have to see pixels: it can train on
@@ -254,7 +325,10 @@ jsoncam/model.py     encoder / decoder convnets, GDN, the loss
 jsoncam/entropy.py   learned per-channel CDF; exports integer freq tables
 jsoncam/rans.py      vectorised interleaved range coder
 jsoncam/codec.py     JSON container, tiling for large images
+jsoncam/meta.py      EXIF extraction + the embedded preview thumbnail
+jsoncam/formats.py   registers HEIC with Pillow, so phone photos open
 jsoncam/train.py     training loop
 jsoncam/data.py      patch cache + dataset
-jsoncam/cli.py       prepare / train / encode / decode / eval
+jsoncam/cli.py       prepare / train / encode / decode / eval / convert / restore
+web/library.py       keyed photo library: SQLite index, payloads on disk
 ```

@@ -37,6 +37,20 @@ img = jsoncam.decode("p.json", out="out.png")
 doc = jsoncam.encode_lossless("photo.png")
 img = jsoncam.decode(doc)                    # decode() detects the format
 
+# --- what rides along beside the pixels -----------------------------------
+# Both blocks are on by default and both are additive: a reader that predates
+# them ignores two extra keys.
+doc["meta"]                                  # captured_at, camera, lens, gps, shot
+doc["preview"]                               # a 320px WebP of the picture, base64
+
+jsoncam.encode("photo.jpg", gps=False)       # keep the date, drop the location
+jsoncam.encode("photo.jpg", preview=False)   # save ~15%, lose the ability to look
+jsoncam.encode("photo.jpg", exif=False)      # carry nothing across
+
+from jsoncam import meta
+meta.proxy_bytes(doc)                        # -> (bytes, "image/webp"), no model
+meta.data_uri(doc)                           # -> "data:image/webp;base64,..."
+
 # --- measuring ------------------------------------------------------------
 jsoncam.stats(doc)                           # bpp, ratio, byte counts
 jsoncam.psnr(original, rebuilt)              # dB
@@ -50,6 +64,23 @@ ds.latent_shape                              # e.g. (128, 14, 14)
 
 CLI equivalents: `jsoncam encode|decode|eval|prepare-latents|train|export`.
 `jsoncam encode photo.png --lossless` for the lossless path.
+
+Folder at a time, which is what anybody with a photo library actually wants.
+Both are resumable, both skip work already done, and both survive one corrupt
+file in the middle of three thousand:
+
+```bash
+jsoncam convert photos/ --out library/       # mirrors the tree, writes .json
+jsoncam restore library/ --out back/         # .json -> .jpg, dates and GPS intact
+jsoncam restore library/ --out sheet/ --previews   # thumbnails only, needs NO checkpoint
+```
+
+`--previews` is the rescue path when the checkpoint is gone: it reads the
+embedded thumbnails, so it is lossy, but it is the difference between a lossy
+copy and nothing at all. `restore --format jpeg` (the default) writes the
+capture date, camera and location back into the file's own EXIF and sets the
+file's modified time to when the shutter opened, so a restored folder sorts
+correctly in Finder and Explorer.
 
 ---
 
@@ -123,6 +154,9 @@ Reproduce: `python scripts/benchmark.py` and `python scripts/benchmark_latents.p
 - **Speed:** roughly 1.3 s encode and 1.7 s decode for 3 MP on one CPU core. Too slow for a request path without care.
 - **Memory:** lossless peaks around 150 MB per megapixel. A 13 MP image needs about 2 GB.
 - **`LatentDataset` opens its file lazily per worker.** It defines `__getstate__` so it survives being pickled to DataLoader workers.
+- **The embedded preview costs real bytes.** Measured on DIV2K at 1600px: about 15% of the bitstream, and `stats(doc)` reports it as `preview_bytes` rather than letting it show up as container overhead. It is a deliberate purchase, and `preview=False` declines it.
+- **HEIC needs an optional dependency.** Every photograph an iPhone takes is HEIC and Pillow cannot open one unaided. Call `jsoncam.formats.enable_heif()` (the CLI and the web app both do) and install `jsoncam[heif]`, or a phone photo fails as "not an image we can read".
+- **`meta.extract` must be called before `exif_transpose`,** which consumes the orientation tag. `codec.encode_image` already orders this correctly; a caller assembling their own pipeline has to.
 
 ## Extending it
 
