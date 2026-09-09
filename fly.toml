@@ -27,6 +27,14 @@ primary_region = "jnb"
   # and stops one large upload from holding the machine for everyone else.
   JSONCAM_MAX_SIDE = "1600"
   JSONCAM_CHAT_DIR = "/data"
+  # Libraries live on the same volume as the chat, for the same reason: the
+  # machine stops when idle and its rootfs is replaced on every deploy, so
+  # anything not under /data is lost the next time either happens.
+  JSONCAM_LIBRARY_DIR = "/data/library"
+  # The gallery is served from the portfolio, so it is a cross-origin caller and
+  # has to be named. A wildcard would let any page a visitor has open read their
+  # library, since these requests carry a key.
+  JSONCAM_ALLOW_ORIGINS = "https://mubby.space,https://www.mubby.space"
 
 [http_service]
   internal_port = 8080

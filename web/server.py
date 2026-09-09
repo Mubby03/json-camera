@@ -23,15 +23,21 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import torch
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, Response,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
-from jsoncam import codec, lossless
+from jsoncam import codec, formats, lossless
+from jsoncam import meta as jsoncam_meta
 from jsoncam.metrics import from_images as ms_ssim, ms_ssim_db
+
+import library
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -50,8 +56,29 @@ STORE_TTL = 3600
 # limit in front of this, so holding cores back only makes each one slower.
 torch.set_num_threads(max(1, os.cpu_count() or 1))
 
+# Register before any request arrives: a Shortcut uploading straight from the
+# camera roll sends HEIC, and without this every one of them is a 415.
+HEIF_OK = formats.enable_heif()
+
 app = FastAPI(title="json-camera", docs_url=None, redoc_url=None)
 _models = {}
+
+# The gallery is served from mubby.space and the codec runs here, so every
+# library call is cross-origin. Named origins rather than "*", because these
+# requests carry a key: a wildcard would let any page a visitor happens to have
+# open read their library out of the browser.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o for o in os.environ.get(
+        "JSONCAM_ALLOW_ORIGINS",
+        "https://mubby.space,https://www.mubby.space,http://localhost:3000").split(",") if o],
+    # Vercel gives every deployment its own hostname, so previews of the gallery
+    # would otherwise be blocked while production worked.
+    allow_origin_regex=r"https://[a-z0-9-]+\.vercel\.app",
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["X-Library-Key", "Content-Type"],
+    max_age=86400,
+)
 
 
 # --------------------------------------------------------------------------
@@ -224,6 +251,14 @@ async def api_compress(
     try:
         img = Image.open(io.BytesIO(raw))
         img.load()
+        # Bake the orientation tag in here, before anything measures this image.
+        # Both encoders call exif_transpose internally, so a phone photo held
+        # sideways would otherwise be encoded rotated while this function kept
+        # the unrotated original: psnr() then compares a 1600x900 array against
+        # a 900x1600 one and the request dies with a broadcast error, and the
+        # lossless path quietly reports bit_exact false on a bit-exact codec.
+        # Doing it first also means MAX_SIDE caps the edge the viewer sees.
+        img = ImageOps.exif_transpose(img)
         img = img.convert("RGB")
     except (UnidentifiedImageError, OSError):
         raise HTTPException(415, "that does not look like an image we can read")
@@ -478,6 +513,277 @@ def api_download(job: str):
                             filename=meta["json_name"])
     return FileResponse(slot_path(job, "decoded.png"), media_type="image/png",
                         filename=meta["png_name"])
+
+
+# --------------------------------------------------------------------------
+# library
+#
+# The endpoints a phone talks to. A Shortcut POSTs photographs here one at a
+# time and a gallery reads them back; see web/library.py for why the store is
+# shaped the way it is.
+#
+# The key arrives either as an `X-Library-Key` header or a `key` field, because
+# the two clients cannot both use the same one: fetch() from the gallery sets a
+# header, and a Shortcut sending a multipart form finds a form field far easier.
+# Neither is ever logged, and only the hash is stored.
+
+LIBRARY_MAX_SIDE = int(os.environ.get("JSONCAM_LIBRARY_MAX_SIDE", str(MAX_SIDE)))
+
+
+def require_key(header_key, form_key=None, query_key=None):
+    key = header_key or form_key or query_key
+    if not key or len(key) < 16:
+        raise HTTPException(401, "this needs a library key")
+    return library.library_id(key)
+
+
+@app.post("/api/library/new")
+def api_library_new():
+    """Mint a key. Generated here so a browser cannot pick a weak one."""
+    key = library.new_key()
+    return {"key": key, "library": library.library_id(key)}
+
+
+@app.post("/api/library/upload")
+async def api_library_upload(
+    file: UploadFile = File(...),
+    key: str = Form(None),
+    model_id: str = Form(None),
+    mode: str = Form("lossy"),
+    gps: str = Form("true"),
+    x_library_key: str = Header(None),
+):
+    """Encode one photograph and file it. This is the Shortcut's whole job."""
+    lib = require_key(x_library_key, key)
+
+    used = library.usage(lib)
+    if used["items"] >= library.MAX_ITEMS:
+        raise HTTPException(413, f"this library is full at {library.MAX_ITEMS} photos")
+    if used["bytes"] >= library.MAX_BYTES:
+        raise HTTPException(413, f"this library is full at {human(library.MAX_BYTES)}")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "that file was empty")
+    if len(raw) > MAX_UPLOAD:
+        raise HTTPException(413, f"file is larger than {human(MAX_UPLOAD)}")
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except (UnidentifiedImageError, OSError):
+        raise HTTPException(415, "that does not look like an image we can read")
+
+    keep_gps = str(gps).lower() not in ("false", "0", "no", "off")
+    lossless_mode = str(mode).lower() == "lossless"
+    note = None
+
+    # Read EXIF off the original, before any resize or transpose touches it.
+    info = jsoncam_meta.extract(img, gps=keep_gps)
+    img = ImageOps.exif_transpose(img)
+
+    if not lossless_mode and max(img.size) > LIBRARY_MAX_SIDE:
+        scale = LIBRARY_MAX_SIDE / max(img.size)
+        img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))),
+                         Image.LANCZOS)
+        note = f"resized to {img.width}x{img.height}"
+
+    t0 = time.time()
+    if lossless_mode:
+        mp = img.width * img.height / 1e6
+        if mp > MAX_LOSSLESS_MP:
+            raise HTTPException(413, f"lossless is capped at {MAX_LOSSLESS_MP:.0f} megapixels here")
+        doc = lossless.encode_image(img.convert("RGB"), name=Path(file.filename or "photo").name,
+                                    exif=False, gps=keep_gps)
+    else:
+        model = load_model(model_id or default_model_id())
+        doc = codec.encode_image(model, img.convert("RGB"), device="cpu",
+                                 name=Path(file.filename or "photo").name,
+                                 exif=False, gps=keep_gps)
+    # The image handed to the encoder has already been transposed and resized, so
+    # it no longer carries EXIF. Put back the block read off the original.
+    if info:
+        doc["meta"] = info
+    encode_seconds = time.time() - t0
+
+    body = json.dumps(doc, separators=(",", ":")).encode("utf-8")
+    item_id = library.add(lib, doc, body, source_bytes=len(raw))
+
+    return {
+        "id": item_id,
+        "name": doc["image"]["name"],
+        "width": doc["image"]["width"],
+        "height": doc["image"]["height"],
+        "source_bytes": len(raw),
+        "json_bytes": len(body),
+        "ratio": round(len(raw) / max(len(body), 1), 2),
+        "captured_at": (info or {}).get("captured_at"),
+        "encode_seconds": round(encode_seconds, 2),
+        "note": note,
+        "library_items": used["items"] + 1,
+    }
+
+
+@app.get("/api/library/items")
+def api_library_items(key: str = None, limit: int = 500, offset: int = 0,
+                      x_library_key: str = Header(None)):
+    lib = require_key(x_library_key, None, key)
+    items = library.listing(lib, limit=min(max(limit, 1), 1000), offset=max(offset, 0))
+    return {"items": items, "usage": library.usage(lib),
+            "max_side": LIBRARY_MAX_SIDE}
+
+
+@app.get("/api/library/thumb/{item_id}")
+def api_library_thumb(item_id: str, key: str = None, x_library_key: str = Header(None)):
+    lib = require_key(x_library_key, None, key)
+    row = library.get(lib, item_id)
+    if not row or not row["preview"]:
+        raise HTTPException(404, "no preview for that item")
+    return Response(row["preview"], media_type=f"image/{row['preview_type'] or 'webp'}",
+                    headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.get("/api/library/file/{item_id}")
+def api_library_file(item_id: str, key: str = None, x_library_key: str = Header(None)):
+    """The stored .json itself, for anyone who wants the file rather than the picture."""
+    lib = require_key(x_library_key, None, key)
+    row = library.get(lib, item_id)
+    body = library.payload(lib, item_id)
+    if not row or body is None:
+        raise HTTPException(404, "no such item")
+    stem = safe_stem(row["name"] or item_id)
+    return Response(body, media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{stem}.json"'})
+
+
+@app.get("/api/library/photo/{item_id}")
+def api_library_photo(item_id: str, key: str = None, download: str = None,
+                      x_library_key: str = Header(None)):
+    """Decode one photograph back to a real picture.
+
+    The expensive call, and the only one that touches the model, which is why
+    the gallery grid never makes it: thumbnails come from the header instead.
+    """
+    lib = require_key(x_library_key, None, key)
+    row = library.get(lib, item_id)
+    body = library.payload(lib, item_id)
+    if not row or body is None:
+        raise HTTPException(404, "no such item")
+
+    doc = json.loads(body)
+    if doc.get("format") == lossless.FORMAT:
+        img = lossless.decode_dict(doc)
+    else:
+        wanted = (doc.get("model") or {}).get("fingerprint")
+        chosen = None
+        for meta_row in discover_models():
+            if codec.model_fingerprint(load_model(meta_row["id"])) == wanted:
+                chosen = meta_row["id"]
+                break
+        try:
+            img = codec.decode_dict(load_model(chosen or default_model_id()), doc, device="cpu")
+        except ValueError as error:
+            raise HTTPException(409, str(error))
+
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, "JPEG", quality=94,
+                            icc_profile=img.info.get("icc_profile"))
+    stem = safe_stem(row["name"] or item_id)
+    headers = {"Cache-Control": "private, max-age=3600"}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="{stem}.jpg"'
+    return Response(buf.getvalue(), media_type="image/jpeg", headers=headers)
+
+
+class _Drain(io.RawIOBase):
+    """A file object that hands whatever is written to it straight to a generator.
+
+    zipfile insists on writing to something; a streaming response insists on
+    yielding. This is the joint between them: ZipFile writes here, the chunks
+    pile up in a list, and the generator below drains that list after each
+    photograph. Nothing larger than one decoded JPEG is ever held in memory, and
+    bytes reach the browser while the rest of the archive is still being made.
+    """
+
+    def __init__(self):
+        self.chunks = []
+
+    def writable(self):
+        return True
+
+    def write(self, data):
+        self.chunks.append(bytes(data))
+        return len(data)
+
+    def drain(self):
+        out, self.chunks = b"".join(self.chunks), []
+        return out
+
+
+BULK_MAX = int(os.environ.get("JSONCAM_BULK_MAX", "40"))
+
+
+@app.get("/api/library/zip")
+def api_library_zip(ids: str, key: str = None, x_library_key: str = Header(None)):
+    """Decode a selection and stream it back as one archive.
+
+    Decoding is seconds per photograph, so a selection of thirty is minutes of
+    work. Doing it as one blocking request would sit silent long enough for
+    every proxy in the path to give up, so the archive is streamed: each picture
+    is decoded, appended, and flushed before the next one starts.
+    """
+    lib = require_key(x_library_key, None, key)
+    wanted = [i for i in (ids or "").split(",") if i][:BULK_MAX]
+    if not wanted:
+        raise HTTPException(400, "no photos selected")
+
+    rows = [(i, library.get(lib, i)) for i in wanted]
+    rows = [(i, r) for i, r in rows if r]
+    if not rows:
+        raise HTTPException(404, "none of those are in this library")
+
+    def stream():
+        import zipfile
+
+        sink = _Drain()
+        seen = {}
+        with zipfile.ZipFile(sink, "w", zipfile.ZIP_STORED) as archive:
+            for item_id, row in rows:
+                body = library.payload(lib, item_id)
+                if body is None:
+                    continue
+                try:
+                    doc = json.loads(body)
+                    if doc.get("format") == lossless.FORMAT:
+                        img = lossless.decode_dict(doc)
+                    else:
+                        img = codec.decode_dict(load_model(default_model_id()), doc,
+                                                device="cpu")
+                except Exception:
+                    # One bad file must not truncate an archive of forty.
+                    continue
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, "JPEG", quality=94)
+
+                # Two photos off a phone are very often both IMG_0042.jpg.
+                stem = safe_stem(row["name"] or item_id)
+                seen[stem] = seen.get(stem, 0) + 1
+                name = f"{stem}.jpg" if seen[stem] == 1 else f"{stem} ({seen[stem]}).jpg"
+                archive.writestr(name, buf.getvalue())
+                yield sink.drain()
+        yield sink.drain()
+
+    stamp = time.strftime("%Y-%m-%d")
+    return StreamingResponse(
+        stream(), media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="json-camera {stamp}.zip"'})
+
+
+@app.delete("/api/library/item/{item_id}")
+def api_library_delete(item_id: str, key: str = None, x_library_key: str = Header(None)):
+    lib = require_key(x_library_key, None, key)
+    if not library.remove(lib, item_id):
+        raise HTTPException(404, "no such item")
+    return {"deleted": item_id, "usage": library.usage(lib)}
 
 
 # --------------------------------------------------------------------------
