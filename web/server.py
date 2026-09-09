@@ -26,7 +26,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import torch
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, Response,
@@ -34,9 +33,55 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, Respons
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from jsoncam import codec, formats, lossless
+from jsoncam import formats
 from jsoncam import meta as jsoncam_meta
-from jsoncam.metrics import from_images as ms_ssim, ms_ssim_db
+
+
+class _Lazy:
+    """A module that imports itself on first use.
+
+    torch takes about half a minute to import on this machine, and until it
+    finished, uvicorn had not bound the port. Fly's proxy wakes a sleeping
+    machine, waits roughly eight seconds for it to answer, and gives up: so the
+    first upload after an idle spell was refused before the app existed, with no
+    error anybody could see. A Shortcut sending two photographs lost both.
+
+    Deferring the import lets the port open in about a second. The connection
+    then succeeds and the first request merely waits, which is a completely
+    different outcome from being refused. `warm()` below loads it in the
+    background so usually nothing waits at all.
+
+    A proxy rather than rewriting thirty call sites: `codec.encode_image(...)`
+    reads exactly as it did.
+    """
+
+    def __init__(self, name):
+        self._name = name
+        self._module = None
+
+    def __getattr__(self, attribute):
+        if self._module is None:
+            import importlib
+
+            self._module = importlib.import_module(self._name)
+        return getattr(self._module, attribute)
+
+
+codec = _Lazy("jsoncam.codec")
+lossless = _Lazy("jsoncam.lossless")
+torch = _Lazy("torch")
+
+
+def ms_ssim(*args, **kwargs):
+    from jsoncam.metrics import from_images
+
+    return from_images(*args, **kwargs)
+
+
+def ms_ssim_db(*args, **kwargs):
+    from jsoncam.metrics import ms_ssim_db as real
+
+    return real(*args, **kwargs)
 
 import faces
 import library
@@ -55,9 +100,26 @@ MAX_LOSSLESS_MP = float(os.environ.get("JSONCAM_MAX_LOSSLESS_MP", "10"))
 STORE = Path(tempfile.mkdtemp(prefix="jsoncam-web-"))
 STORE_TTL = 3600
 
-# Use the whole machine. Requests are already serialised by the concurrency
-# limit in front of this, so holding cores back only makes each one slower.
-torch.set_num_threads(max(1, os.cpu_count() or 1))
+def warm():
+    """Load torch now, in the background, so the first request does not wait.
+
+    Called at startup. The port is already open by then, which is the point:
+    the machine is reachable while this is still running.
+    """
+    try:
+        # Use the whole machine. Requests are already serialised by the
+        # concurrency limit in front of this, so holding cores back only makes
+        # each one slower.
+        torch.set_num_threads(max(1, os.cpu_count() or 1))
+        # Touch the codec itself, not just torch: that is what the request
+        # handlers reach for, and warming only torch left the first upload
+        # paying for the rest of the import anyway.
+        codec.TILE
+        lossless.FORMAT
+        discover_models()
+        log.info("codec ready")
+    except Exception:
+        log.exception("warm-up failed; the first request will do this itself")
 
 # Register before any request arrives: a Shortcut uploading straight from the
 # camera roll sends HEIC, and without this every one of them is a 415.
@@ -642,7 +704,23 @@ def start_worker():
 
 @app.on_event("startup")
 def _on_startup():
+    import threading
+
+    # Both in the background. The port is bound before either runs, which is
+    # the whole reason a cold machine now accepts the request that woke it.
+    threading.Thread(target=warm, daemon=True, name="jsoncam-warm").start()
     start_worker()
+
+
+@app.get("/api/health")
+def api_health():
+    """Answers without touching the codec, so it is true the moment the port opens."""
+    # `warm` is what flips these; until then the port is open and a request
+    # would simply wait for the import rather than be refused.
+    return {"ok": True,
+            "codec_loaded": codec._module is not None,
+            "torch_loaded": torch._module is not None,
+            "heic": HEIF_OK, "faces": faces.available()}
 
 
 # --------------------------------------------------------------------------
@@ -860,7 +938,9 @@ def api_library_items(key: str = None, limit: int = 500, offset: int = 0,
             "trash_days": library.TRASH_DAYS, "max_side": LIBRARY_MAX_SIDE,
             "settings": library.settings(lib),
             "ai_available": vision.available(),
-            "pending": library.queue_depth(lib)}
+            "pending": library.queue_depth(lib),
+            "recent": library.arrived_recently(lib),
+            "checking": library.verdicts_pending()}
 
 
 def _with_captions(lib, items):

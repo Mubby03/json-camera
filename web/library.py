@@ -650,6 +650,23 @@ def places_pending():
     return row["n"]
 
 
+def arrived_recently(lib, minutes=15):
+    """Photographs stored in the last few minutes.
+
+    There is no upload queue to show: an upload either stored a photograph or it
+    did not. What somebody actually wants after running a Shortcut is
+    confirmation that it got through, and this is that. It also distinguishes
+    "the Shortcut did nothing" from "the Shortcut worked and I am looking at the
+    wrong library", which are the two ways this goes wrong and which otherwise
+    look identical.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM items WHERE library = ? AND deleted_at IS NULL "
+            "AND stored_at > ?", (lib, time.time() - minutes * 60)).fetchone()
+    return row["n"]
+
+
 def queue_depth(lib):
     with _connect() as conn:
         row = conn.execute(
