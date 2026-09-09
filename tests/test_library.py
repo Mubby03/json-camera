@@ -537,3 +537,136 @@ def test_place_names_drop_repeated_components(tmp_path, monkeypatch):
     assert library._shorten(
         {"address": {"suburb": "Lagos", "city": "Lagos", "country": "Nigeria"}}
     ) == "Lagos, Nigeria"
+
+
+# --------------------------------------------------------------------------
+# the derived layer: captions, search, and the switches that gate them
+
+
+def test_derived_features_are_off_until_asked(tmp_path, monkeypatch):
+    """Both cost something somebody has to agree to.
+
+    The vision pass spends the operator's money per photograph, and faces are
+    biometric data about people who never agreed to anything. Neither can be a
+    default that nobody saw.
+    """
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    assert library.settings(lib) == {"ai": False, "faces": False}
+
+    assert library.set_settings(lib, ai=True) == {"ai": True, "faces": False}
+    # Setting one must not silently clear the other.
+    assert library.set_settings(lib, faces=True) == {"ai": True, "faces": True}
+    assert library.set_settings(lib, ai=False) == {"ai": False, "faces": True}
+
+
+def test_a_photo_is_described_once_and_never_again(tmp_path, monkeypatch):
+    """The whole point of storing it: no work on a refresh, ever."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    item = _file(library, lib, "a.jpg")
+    library.enqueue_analysis(lib, item)
+
+    assert library.queue_depth(lib) == 1
+    assert [r["item"] for r in library.next_pending()] == [item]
+
+    library.save_analysis(lib, item, {"caption": "a cat", "tags": ["cat"], "text": None,
+                                      "people": 0, "kind": "photo", "model": "test"},
+                          "a cat cat")
+    assert library.queue_depth(lib) == 0
+    assert library.next_pending() == []
+    # Queuing it again must not resurrect finished work.
+    library.enqueue_analysis(lib, item)
+    assert library.next_pending() == []
+
+
+def test_a_photo_that_keeps_failing_is_eventually_left_alone(tmp_path, monkeypatch):
+    """Otherwise one bad file is an infinite loop of paid API calls."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    item = _file(library, lib, "bad.jpg")
+    library.enqueue_analysis(lib, item)
+
+    for _ in range(library.MAX_ATTEMPTS):
+        assert library.next_pending(), "gave up too early"
+        library.note_attempt(item)
+    assert library.next_pending() == []
+
+
+def test_search_requires_every_term(tmp_path, monkeypatch):
+    """"beach sunset" must narrow, not widen."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    beach = _file(library, lib, "beach.jpg")
+    lake = _file(library, lib, "lake.jpg")
+    for item, blob in ((beach, "a sunset over a sandy beach"), (lake, "a lake at sunset")):
+        library.enqueue_analysis(lib, item)
+        library.save_analysis(lib, item, {"caption": blob, "tags": [], "text": None,
+                                          "people": 0, "kind": "photo", "model": "t"}, blob)
+
+    assert len(library.search(lib, "sunset")) == 2
+    assert [i["id"] for i in library.search(lib, "beach sunset")] == [beach]
+    assert library.search(lib, "beach lake") == []
+
+
+def test_search_never_returns_another_library(tmp_path, monkeypatch):
+    library = _lib(tmp_path, monkeypatch)
+    mine = library.library_id(library.new_key())
+    yours = library.library_id(library.new_key())
+    for lib in (mine, yours):
+        item = _file(library, lib, "same.jpg")
+        library.enqueue_analysis(lib, item)
+        library.save_analysis(lib, item, {"caption": "a dog", "tags": [], "text": None,
+                                          "people": 0, "kind": "photo", "model": "t"}, "a dog")
+
+    assert len(library.search(mine, "dog")) == 1
+    assert len(library.search(yours, "dog")) == 1
+
+
+def test_deleted_photos_drop_out_of_search_and_the_queue(tmp_path, monkeypatch):
+    """A photo in the trash should not be findable, or paid to describe."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    item = _file(library, lib, "gone.jpg")
+    library.enqueue_analysis(lib, item)
+    library.save_analysis(lib, item, {"caption": "a boat", "tags": [], "text": None,
+                                      "people": 0, "kind": "photo", "model": "t"}, "a boat")
+    assert len(library.search(lib, "boat")) == 1
+
+    library.trash(lib, item)
+    assert library.search(lib, "boat") == []
+
+    other = _file(library, lib, "pending.jpg")
+    library.enqueue_analysis(lib, other)
+    library.trash(lib, other)
+    assert library.next_pending() == []
+    assert library.queue_depth(lib) == 0
+
+
+def test_searchable_blob_includes_what_people_actually_type():
+    import sys
+
+    sys.path.insert(0, "web")
+    import vision
+
+    blob = vision.searchable(
+        {"caption": "A Palm Tree", "tags": ["Beach"], "text": "GATE 22", "kind": "photo"},
+        {"name": "IMG_1.HEIC", "camera": "Apple iPhone 15 Pro", "place": "Lekki, Lagos",
+         "captured_at": "2026-07-04T18:12:09"},
+    )
+    for term in ("palm", "beach", "gate 22", "iphone", "lekki", "2026-07"):
+        assert term in blob, term
+
+
+def test_captioning_is_skipped_rather_than_crashing_without_credentials(monkeypatch):
+    """An upload must survive a missing API key, an outage, and an unpaid bill."""
+    import sys
+
+    sys.path.insert(0, "web")
+    import vision
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/nonexistent-for-this-test")
+    assert vision.available() is False
+    assert vision.describe(b"not really an image") is None

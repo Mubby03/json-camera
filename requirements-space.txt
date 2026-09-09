@@ -8,3 +8,6 @@ pillow-heif
 fastapi
 uvicorn
 python-multipart
+# Captioning, for the photo search. Optional at runtime: without
+# ANTHROPIC_API_KEY the feature simply reports itself unavailable.
+anthropic

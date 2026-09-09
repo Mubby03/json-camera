@@ -83,6 +83,35 @@ CREATE TABLE IF NOT EXISTS places (
     name    TEXT,
     asked_at REAL
 );
+
+-- What the vision model saw. One row per photograph, written pending at upload
+-- and filled in by the worker, so this is computed exactly once per photo and
+-- never on a page load. `done_at IS NULL` is the queue.
+CREATE TABLE IF NOT EXISTS analysis (
+    item     TEXT PRIMARY KEY,
+    library  TEXT NOT NULL,
+    caption  TEXT,
+    tags     TEXT,          -- JSON array
+    text     TEXT,          -- text legible in the image
+    people   INTEGER,
+    kind     TEXT,
+    search   TEXT,          -- everything above, lowercased, for matching
+    model    TEXT,
+    attempts INTEGER DEFAULT 0,
+    done_at  REAL
+);
+CREATE INDEX IF NOT EXISTS analysis_pending ON analysis (done_at, attempts);
+CREATE INDEX IF NOT EXISTS analysis_by_library ON analysis (library);
+
+-- Per-library switches. Both default off: the vision pass costs the operator
+-- money per photograph and faces are biometric data about people who never
+-- agreed to anything, so neither can be an assumption.
+CREATE TABLE IF NOT EXISTS settings (
+    library    TEXT PRIMARY KEY,
+    ai         INTEGER DEFAULT 0,
+    faces      INTEGER DEFAULT 0,
+    updated_at REAL
+);
 """
 
 # Columns added after the first release. SQLite has no ADD COLUMN IF NOT EXISTS,
@@ -262,6 +291,130 @@ def place_for(lat, lon):
     return name
 
 
+# --------------------------------------------------------------------------
+# settings
+#
+# Off by default, both of them, and that is the whole point of them existing.
+# The vision pass spends the operator's money on every photograph, and face
+# recognition is biometric data about people who never agreed to it, so turning
+# either on has to be somebody's decision rather than a default nobody saw.
+
+def settings(lib):
+    with _connect() as conn:
+        row = conn.execute("SELECT ai, faces FROM settings WHERE library = ?", (lib,)).fetchone()
+    return {"ai": bool(row["ai"]) if row else False,
+            "faces": bool(row["faces"]) if row else False}
+
+
+def set_settings(lib, ai=None, faces=None):
+    current = settings(lib)
+    merged = {"ai": current["ai"] if ai is None else bool(ai),
+              "faces": current["faces"] if faces is None else bool(faces)}
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO settings (library, ai, faces, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(library) DO UPDATE SET ai = ?, faces = ?, updated_at = ?",
+            (lib, int(merged["ai"]), int(merged["faces"]), time.time(),
+             int(merged["ai"]), int(merged["faces"]), time.time()))
+    return merged
+
+
+# --------------------------------------------------------------------------
+# the analysis queue
+
+# A photograph the model cannot describe should not be retried forever. Three
+# attempts covers a transient outage; past that it is something about the file.
+MAX_ATTEMPTS = 3
+
+
+def enqueue_analysis(lib, item_id):
+    """Mark a photograph as wanting a caption."""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO analysis (item, library, attempts) VALUES (?, ?, 0)",
+            (item_id, lib))
+
+
+def next_pending(limit=1):
+    """Photographs waiting to be described, oldest first, across all libraries."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT a.item, a.library, i.preview, i.preview_type, i.name, i.camera, "
+            "       i.place, i.captured_at "
+            "FROM analysis a JOIN items i ON i.id = a.item "
+            "WHERE a.done_at IS NULL AND a.attempts < ? AND i.deleted_at IS NULL "
+            "LIMIT ?", (MAX_ATTEMPTS, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def note_attempt(item_id):
+    with _connect() as conn:
+        conn.execute("UPDATE analysis SET attempts = attempts + 1 WHERE item = ?", (item_id,))
+
+
+def save_analysis(lib, item_id, data, search):
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE analysis SET caption = ?, tags = ?, text = ?, people = ?, kind = ?, "
+            "       search = ?, model = ?, done_at = ? WHERE item = ? AND library = ?",
+            (data.get("caption"), json.dumps(data.get("tags") or []), data.get("text"),
+             data.get("people"), data.get("kind"), search, data.get("model"),
+             time.time(), item_id, lib))
+
+
+def analysis_for(lib, item_ids):
+    """Captions for a page of the gallery, in one query rather than one each."""
+    if not item_ids:
+        return {}
+    marks = ",".join("?" * len(item_ids))
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT item, caption, tags, text, people, kind FROM analysis "
+            f"WHERE library = ? AND item IN ({marks})", (lib, *item_ids)).fetchall()
+    out = {}
+    for r in rows:
+        out[r["item"]] = {
+            "caption": r["caption"],
+            "tags": json.loads(r["tags"]) if r["tags"] else [],
+            "text": r["text"],
+            "people": r["people"],
+            "kind": r["kind"],
+        }
+    return out
+
+
+def queue_depth(lib):
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM analysis a JOIN items i ON i.id = a.item "
+            "WHERE a.library = ? AND a.done_at IS NULL AND a.attempts < ? "
+            "AND i.deleted_at IS NULL", (lib, MAX_ATTEMPTS)).fetchone()
+    return row["n"]
+
+
+def search(lib, query, limit=200):
+    """Find photographs by what is in them.
+
+    Every term has to match somewhere, which is what makes "beach sunset" narrow
+    rather than widen. LIKE over a prepared lowercase column rather than FTS,
+    because a library is thousands of rows and one indexed scan is already fast,
+    while FTS would need a second table kept in step with this one.
+    """
+    terms = [t for t in (query or "").lower().split() if t][:8]
+    if not terms:
+        return []
+    where = " AND ".join(["a.search LIKE ?"] * len(terms))
+    args = [f"%{t}%" for t in terms]
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT {_columns('i.')} "
+            f"FROM items i JOIN analysis a ON a.item = i.id "
+            f"WHERE i.library = ? AND i.deleted_at IS NULL AND {where} "
+            f"ORDER BY COALESCE(i.captured_at, datetime(i.stored_at, 'unixepoch')) DESC "
+            f"LIMIT ?", (lib, *args, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _payload_path(lib, item_id):
     return LIBRARY_DIR / lib[:2] / lib / f"{item_id}.json"
 
@@ -340,9 +493,21 @@ def add(lib, doc, raw_json, source_bytes=None):
     return item_id
 
 
-COLUMNS = ("id, name, stored_at, captured_at, width, height, json_bytes, "
-           "source_bytes, lossless, camera, lens, lat, lon, place, favourite, "
-           "deleted_at, preview IS NOT NULL AS has_preview")
+# The columns the gallery reads. Kept as names so both the plain and the
+# table-qualified form below are generated rather than hand-maintained: search
+# joins two tables and needs "i.id", and string-replacing into finished SQL is
+# how you get a query that breaks when a column name contains another one.
+COLUMN_NAMES = ("id", "name", "stored_at", "captured_at", "width", "height", "json_bytes",
+                "source_bytes", "lossless", "camera", "lens", "lat", "lon", "place",
+                "favourite", "deleted_at")
+
+
+def _columns(prefix=""):
+    listed = ", ".join(f"{prefix}{name}" for name in COLUMN_NAMES)
+    return f"{listed}, {prefix}preview IS NOT NULL AS has_preview"
+
+
+COLUMNS = _columns()
 
 # The three views the gallery offers. Kept here rather than assembled from a
 # caller's string so no request can invent its own WHERE clause.

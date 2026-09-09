@@ -38,6 +38,7 @@ from jsoncam import meta as jsoncam_meta
 from jsoncam.metrics import from_images as ms_ssim, ms_ssim_db
 
 import library
+import vision
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -516,6 +517,65 @@ def api_download(job: str):
 
 
 # --------------------------------------------------------------------------
+# the captioning worker
+#
+# Runs once per photograph, in the background, and never on a page load. The row
+# is written pending at upload; this thread fills it in. That means a restart
+# resumes where it stopped rather than redoing work, the gallery is always just
+# a query, and a slow or missing vision API never holds up an upload.
+#
+# One at a time on purpose. The machine has a single core that spends most of it
+# encoding, and the queue draining slowly is invisible to a visitor while a
+# thread pool competing with the codec is not.
+
+WORKER_IDLE = float(os.environ.get("JSONCAM_WORKER_IDLE", "5"))
+_worker_started = False
+
+
+def analyse_one():
+    """Describe the next waiting photograph. True if it did any work."""
+    pending = library.next_pending(limit=1)
+    if not pending:
+        return False
+    row = pending[0]
+    # Count the attempt before making it, so a request that crashes the worker
+    # cannot be retried forever.
+    library.note_attempt(row["item"])
+    described = vision.describe(row["preview"], f"image/{row['preview_type'] or 'webp'}")
+    if not described:
+        return True                      # attempted; it will retry or give up
+    library.save_analysis(row["library"], row["item"], described,
+                          vision.searchable(described, row))
+    return True
+
+
+def worker_loop():
+    while True:
+        try:
+            did_work = analyse_one()
+        except Exception:
+            # A worker that dies takes the whole feature with it silently.
+            did_work = False
+        time.sleep(0 if did_work else WORKER_IDLE)
+
+
+def start_worker():
+    """Start the worker once, and only if captioning could work at all."""
+    global _worker_started
+    if _worker_started or not vision.available():
+        return
+    import threading
+
+    _worker_started = True
+    threading.Thread(target=worker_loop, daemon=True, name="jsoncam-vision").start()
+
+
+@app.on_event("startup")
+def _on_startup():
+    start_worker()
+
+
+# --------------------------------------------------------------------------
 # library
 #
 # The endpoints a phone talks to. A Shortcut POSTs photographs here one at a
@@ -631,6 +691,10 @@ async def api_library_upload(
 
     body = json.dumps(doc, separators=(",", ":")).encode("utf-8")
     item_id = library.add(lib, doc, body, source_bytes=len(raw))
+    # Queued, not run: the Shortcut is waiting on this response and the caption
+    # is worth nothing to it.
+    if library.settings(lib)["ai"] and vision.available():
+        library.enqueue_analysis(lib, item_id)
 
     return {
         "id": item_id,
@@ -658,8 +722,51 @@ def api_library_items(key: str = None, limit: int = 500, offset: int = 0,
     library.purge(lib)
     items = library.listing(lib, limit=min(max(limit, 1), 1000), offset=max(offset, 0),
                             view=view)
-    return {"items": items, "usage": library.usage(lib), "view": view,
-            "trash_days": library.TRASH_DAYS, "max_side": LIBRARY_MAX_SIDE}
+    return {"items": _with_captions(lib, items), "usage": library.usage(lib), "view": view,
+            "trash_days": library.TRASH_DAYS, "max_side": LIBRARY_MAX_SIDE,
+            "settings": library.settings(lib),
+            "ai_available": vision.available(),
+            "pending": library.queue_depth(lib)}
+
+
+def _with_captions(lib, items):
+    """Attach what the vision model saw, in one query for the whole page."""
+    found = library.analysis_for(lib, [i["id"] for i in items])
+    for item in items:
+        item["analysis"] = found.get(item["id"])
+    return items
+
+
+@app.get("/api/library/search")
+def api_library_search(q: str, key: str = None, x_library_key: str = Header(None)):
+    """Find photographs by what is in them, not just when they were taken."""
+    lib = require_key(x_library_key, None, key)
+    items = library.search(lib, q)
+    return {"items": _with_captions(lib, items), "query": q,
+            "usage": library.usage(lib), "settings": library.settings(lib),
+            "pending": library.queue_depth(lib)}
+
+
+@app.get("/api/library/settings")
+def api_library_get_settings(key: str = None, x_library_key: str = Header(None)):
+    lib = require_key(x_library_key, None, key)
+    return {"settings": library.settings(lib), "ai_available": vision.available(),
+            "model": vision.MODEL, "pending": library.queue_depth(lib)}
+
+
+@app.post("/api/library/settings")
+def api_library_set_settings(ai: bool = None, faces: bool = None, key: str = None,
+                             x_library_key: str = Header(None)):
+    """Turn the derived features on or off for this library.
+
+    Both are off until somebody asks. Turning `ai` on only affects photographs
+    uploaded afterwards plus anything already queued; it does not reach back and
+    describe a library retroactively, because that would spend a surprising
+    amount of somebody's money without asking.
+    """
+    lib = require_key(x_library_key, None, key)
+    updated = library.set_settings(lib, ai=ai, faces=faces)
+    return {"settings": updated, "pending": library.queue_depth(lib)}
 
 
 @app.post("/api/library/item/{item_id}/favourite")

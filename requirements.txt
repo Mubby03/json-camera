@@ -10,6 +10,7 @@ tqdm
 fastapi
 uvicorn
 python-multipart
+anthropic
 
 # gradio demo (optional, the web app does not need it)
 gradio

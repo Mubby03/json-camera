@@ -21,7 +21,7 @@ dependencies = ["torch", "numpy", "pillow"]
 [project.optional-dependencies]
 # pillow-heif is what lets the web app accept a photograph straight off an
 # iPhone, which is HEIC and which Pillow cannot open by itself.
-web = ["fastapi", "uvicorn", "python-multipart", "pillow-heif"]
+web = ["fastapi", "uvicorn", "python-multipart", "pillow-heif", "anthropic"]
 heif = ["pillow-heif"]
 train = ["torchvision", "tqdm"]
 dev = ["pytest"]
