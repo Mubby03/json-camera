@@ -11,3 +11,6 @@ python-multipart
 # Captioning, for the photo search. Optional at runtime: without
 # ANTHROPIC_API_KEY the feature simply reports itself unavailable.
 anthropic
+# Face detection and recognition, entirely local: YuNet + SFace under OpenCV.
+# Headless because a server has no display. Optional at runtime.
+opencv-python-headless

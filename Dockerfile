@@ -34,11 +34,22 @@ COPY --chown=user AGENTS.md ./AGENTS.md
 # inference, so copying the whole directory would triple the image for nothing.
 COPY --chown=user checkpoints/stable ./checkpoints
 
+# The two face models, about 38 MB, fetched at build time and verified by
+# sha256. Not in git, because weights do not belong there; not fetched at
+# runtime, because a machine that starts up without network access should still
+# be able to find faces. A hash mismatch fails the build on purpose: a changed
+# model would silently stop matching every embedding already stored, and a
+# library that had learned who six people were would re-cluster them into
+# strangers.
+COPY --chown=user scripts/get_face_models.py ./scripts/get_face_models.py
+RUN python scripts/get_face_models.py /home/user/app/checkpoints/faces
+
 USER user
 
 # PORT is read at runtime, not baked in: a Space expects 7860 and Cloud Run
 # injects its own, so the same image serves both.
 ENV JSONCAM_MODELS=/home/user/app/checkpoints \
+    JSONCAM_FACE_MODELS=/home/user/app/checkpoints/faces \
     HOST=0.0.0.0 \
     PORT=7860
 

@@ -103,6 +103,38 @@ CREATE TABLE IF NOT EXISTS analysis (
 CREATE INDEX IF NOT EXISTS analysis_pending ON analysis (done_at, attempts);
 CREATE INDEX IF NOT EXISTS analysis_by_library ON analysis (library);
 
+-- Faces found in photographs, and the people they were grouped into.
+--
+-- The embedding is 128 float32s as a blob. Matching a new face compares it
+-- against one centroid per person rather than against every face ever stored,
+-- which is what keeps this cheap enough to run inline at upload.
+CREATE TABLE IF NOT EXISTS faces (
+    id        TEXT PRIMARY KEY,
+    item      TEXT NOT NULL,
+    library   TEXT NOT NULL,
+    person    TEXT,
+    bbox      TEXT,          -- JSON [x, y, w, h], normalised 0..1
+    embedding BLOB,
+    crop      BLOB,          -- a 96px JPEG of the face, for the picker
+    score     REAL,
+    edge      INTEGER,
+    found_at  REAL
+);
+CREATE INDEX IF NOT EXISTS faces_by_item ON faces (item);
+CREATE INDEX IF NOT EXISTS faces_by_person ON faces (library, person);
+
+CREATE TABLE IF NOT EXISTS people (
+    id         TEXT PRIMARY KEY,
+    library    TEXT NOT NULL,
+    name       TEXT,
+    centroid   BLOB,
+    face_count INTEGER DEFAULT 0,
+    cover      TEXT,          -- the face id whose crop represents them
+    cover_edge INTEGER DEFAULT 0,
+    updated_at REAL
+);
+CREATE INDEX IF NOT EXISTS people_by_library ON people (library, face_count DESC);
+
 -- Per-library switches. Both default off: the vision pass costs the operator
 -- money per photograph and faces are biometric data about people who never
 -- agreed to anything, so neither can be an assumption.
@@ -413,6 +445,202 @@ def search(lib, query, limit=200):
             f"ORDER BY COALESCE(i.captured_at, datetime(i.stored_at, 'unixepoch')) DESC "
             f"LIMIT ?", (lib, *args, limit)).fetchall()
     return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------
+# people
+#
+# Clustering is incremental and greedy, on purpose. Each new face is compared
+# against one centroid per person and joins the best match above the threshold,
+# or starts a new person. That is O(people) per face rather than O(faces), so
+# filing the four hundredth photograph costs the same as the fourth.
+#
+# The tradeoff is that it depends on arrival order and can split one person into
+# two clusters when early photographs are unflattering. That is why `merge` is a
+# first-class operation rather than an afterthought: a person merging two piles
+# by hand is a five second fix, whereas a wrong merge loses information.
+
+
+def add_faces(lib, item_id, found):
+    """File the faces from one photograph and group them. Returns person ids."""
+    import faces as face_model
+
+    touched = []
+    for face in found:
+        vector = face["embedding"]
+        with _connect() as conn:
+            people = conn.execute(
+                "SELECT id, centroid, face_count FROM people WHERE library = ?",
+                (lib,)).fetchall()
+
+            best, best_score, runner_up = None, -1.0, -1.0
+            for person in people:
+                score = face_model.similarity(
+                    face_model.from_blob(person["centroid"]), vector)
+                if score > best_score:
+                    best, best_score, runner_up = person, score, best_score
+                elif score > runner_up:
+                    runner_up = score
+
+            face_id = secrets.token_urlsafe(12).replace("-", "_")
+            # Two conditions, not one. The face has to look like this person,
+            # and it has to look like this person *more clearly than like anyone
+            # else*. A face that sits between two piles is the face that welds
+            # them together, and a new pile is the recoverable answer.
+            decisive = runner_up < 0 or (best_score - runner_up) >= face_model.MARGIN
+            if best is not None and best_score >= face_model.MATCH and decisive:
+                person_id = best["id"]
+                centroid = face_model.merged_centroid(
+                    face_model.from_blob(best["centroid"]), best["face_count"], vector)
+                conn.execute(
+                    "UPDATE people SET centroid = ?, face_count = face_count + 1, "
+                    "updated_at = ? WHERE id = ?",
+                    (face_model.to_blob(centroid), time.time(), person_id))
+            else:
+                person_id = secrets.token_urlsafe(9).replace("-", "_")
+                conn.execute(
+                    "INSERT INTO people (id, library, name, centroid, face_count, "
+                    "cover, cover_edge, updated_at) VALUES (?, ?, NULL, ?, 1, ?, ?, ?)",
+                    (person_id, lib, face_model.to_blob(vector), face_id,
+                     face["edge"], time.time()))
+
+            conn.execute(
+                "INSERT INTO faces (id, item, library, person, bbox, embedding, crop, "
+                "score, edge, found_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (face_id, item_id, lib, person_id, json.dumps(face["bbox"]),
+                 face_model.to_blob(vector), face["crop"], face["score"],
+                 face["edge"], time.time()))
+
+            # The biggest, clearest face becomes the one shown in the picker.
+            conn.execute(
+                "UPDATE people SET cover = ?, cover_edge = ? "
+                "WHERE id = ? AND ? > cover_edge",
+                (face_id, face["edge"], person_id, face["edge"]))
+        touched.append(person_id)
+    return touched
+
+
+def people_in(lib, named_first=True):
+    """Everybody found in this library, most photographed first.
+
+    Only counts faces in photographs that are not in the trash, so deleting a
+    photo takes its people with it rather than leaving a person who appears in
+    nothing.
+    """
+    order = ("p.name IS NULL, live DESC" if named_first else "live DESC")
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT p.id, p.name, p.cover, "
+            # DISTINCT on the photograph, not the face: after two piles are
+            # merged, one photograph can hold two of the same person's faces,
+            # and the gallery labels this number "photos".
+            f"       COUNT(DISTINCT f.item) AS live "
+            f"FROM people p "
+            f"JOIN faces f ON f.person = p.id "
+            f"JOIN items i ON i.id = f.item AND i.deleted_at IS NULL "
+            f"WHERE p.library = ? "
+            f"GROUP BY p.id HAVING live > 0 "
+            f"ORDER BY {order}", (lib,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def face_crop(lib, face_id):
+    with _connect() as conn:
+        row = conn.execute("SELECT crop FROM faces WHERE library = ? AND id = ?",
+                           (lib, face_id)).fetchone()
+    return row["crop"] if row else None
+
+
+def name_person(lib, person_id, name):
+    cleaned = (name or "").strip()[:60] or None
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE people SET name = ?, updated_at = ? WHERE library = ? AND id = ?",
+            (cleaned, time.time(), lib, person_id))
+    return cur.rowcount > 0
+
+
+def photos_of(lib, person_id, limit=500):
+    """Every photograph this person appears in."""
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT DISTINCT {_columns('i.')} FROM items i "
+            f"JOIN faces f ON f.item = i.id "
+            f"WHERE i.library = ? AND f.person = ? AND i.deleted_at IS NULL "
+            f"ORDER BY COALESCE(i.captured_at, datetime(i.stored_at, 'unixepoch')) DESC "
+            f"LIMIT ?", (lib, person_id, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def merge_people(lib, keep_id, absorb_id):
+    """Fold one person into another, for when clustering split somebody in two."""
+    import faces as face_model
+
+    if keep_id == absorb_id:
+        return False
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, centroid, face_count, name, cover, cover_edge FROM people "
+            "WHERE library = ? AND id IN (?, ?)", (lib, keep_id, absorb_id)).fetchall()
+        found = {r["id"]: r for r in rows}
+        if len(found) != 2:
+            return False
+        keep, absorb = found[keep_id], found[absorb_id]
+
+        # Weighted mean of the two centroids, so the result reflects how many
+        # faces each side actually contributed.
+        import numpy as np
+
+        total = keep["face_count"] + absorb["face_count"]
+        blended = (face_model.from_blob(keep["centroid"]) * keep["face_count"]
+                   + face_model.from_blob(absorb["centroid"]) * absorb["face_count"]) / total
+        norm = float(np.linalg.norm(blended))
+        if norm:
+            blended = blended / norm
+
+        conn.execute("UPDATE faces SET person = ? WHERE library = ? AND person = ?",
+                     (keep_id, lib, absorb_id))
+        cover, cover_edge = keep["cover"], keep["cover_edge"]
+        if absorb["cover_edge"] > (cover_edge or 0):
+            cover, cover_edge = absorb["cover"], absorb["cover_edge"]
+        conn.execute(
+            "UPDATE people SET centroid = ?, face_count = ?, name = COALESCE(name, ?), "
+            "cover = ?, cover_edge = ?, updated_at = ? WHERE id = ?",
+            (face_model.to_blob(blended), total, absorb["name"], cover, cover_edge,
+             time.time(), keep_id))
+        conn.execute("DELETE FROM people WHERE library = ? AND id = ?", (lib, absorb_id))
+    return True
+
+
+def forget_faces(lib):
+    """Delete every face and person in a library.
+
+    Called when the switch is turned off, because "off" for biometric data has to
+    mean erased rather than hidden. Somebody withdrawing consent should not have
+    their vectors sitting in a table waiting to be switched back on.
+    """
+    with _connect() as conn:
+        faces_gone = conn.execute("DELETE FROM faces WHERE library = ?", (lib,)).rowcount
+        people_gone = conn.execute("DELETE FROM people WHERE library = ?", (lib,)).rowcount
+    return {"faces": faces_gone, "people": people_gone}
+
+
+def faces_on(lib, item_ids):
+    """Which people appear in each photograph, for a page of the gallery."""
+    if not item_ids:
+        return {}
+    marks = ",".join("?" * len(item_ids))
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT f.item, f.person, f.bbox, p.name FROM faces f "
+            f"LEFT JOIN people p ON p.id = f.person "
+            f"WHERE f.library = ? AND f.item IN ({marks})", (lib, *item_ids)).fetchall()
+    out = {}
+    for r in rows:
+        out.setdefault(r["item"], []).append(
+            {"person": r["person"], "name": r["name"],
+             "bbox": json.loads(r["bbox"]) if r["bbox"] else None})
+    return out
 
 
 def _payload_path(lib, item_id):

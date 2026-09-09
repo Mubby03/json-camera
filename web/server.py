@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import torch
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, Response,
                                StreamingResponse)
@@ -37,6 +37,7 @@ from jsoncam import codec, formats, lossless
 from jsoncam import meta as jsoncam_meta
 from jsoncam.metrics import from_images as ms_ssim, ms_ssim_db
 
+import faces
 import library
 import vision
 
@@ -691,10 +692,26 @@ async def api_library_upload(
 
     body = json.dumps(doc, separators=(",", ":")).encode("utf-8")
     item_id = library.add(lib, doc, body, source_bytes=len(raw))
+    wants = library.settings(lib)
     # Queued, not run: the Shortcut is waiting on this response and the caption
     # is worth nothing to it.
-    if library.settings(lib)["ai"] and vision.available():
+    if wants["ai"] and vision.available():
         library.enqueue_analysis(lib, item_id)
+
+    # Faces, on the other hand, run now. They need the actual pixels at a usable
+    # size, and this is the one moment the full image is already in memory:
+    # doing it later would mean decoding the photograph again, which is seconds
+    # of neural network to recover something we are holding for free. Measured
+    # at 35 ms for a frame with twenty-four faces in it.
+    people_found = 0
+    if wants["faces"] and faces.available():
+        try:
+            found = faces.find(img)
+            if found:
+                library.add_faces(lib, item_id, found)
+            people_found = len(found)
+        except Exception:
+            pass          # a photograph must upload even if this misbehaves
 
     return {
         "id": item_id,
@@ -707,6 +724,7 @@ async def api_library_upload(
         "captured_at": (info or {}).get("captured_at"),
         "encode_seconds": round(encode_seconds, 2),
         "note": note,
+        "faces": people_found,
         "library_items": used["items"] + 1,
     }
 
@@ -731,9 +749,12 @@ def api_library_items(key: str = None, limit: int = 500, offset: int = 0,
 
 def _with_captions(lib, items):
     """Attach what the vision model saw, in one query for the whole page."""
-    found = library.analysis_for(lib, [i["id"] for i in items])
+    ids = [i["id"] for i in items]
+    described = library.analysis_for(lib, ids)
+    who = library.faces_on(lib, ids) if library.settings(lib)["faces"] else {}
     for item in items:
-        item["analysis"] = found.get(item["id"])
+        item["analysis"] = described.get(item["id"])
+        item["faces"] = who.get(item["id"], [])
     return items
 
 
@@ -747,6 +768,56 @@ def api_library_search(q: str, key: str = None, x_library_key: str = Header(None
             "pending": library.queue_depth(lib)}
 
 
+@app.get("/api/library/people")
+def api_library_people(key: str = None, x_library_key: str = Header(None)):
+    """Everybody found in this library, most photographed first, named ones on top."""
+    lib = require_key(x_library_key, None, key)
+    return {"people": library.people_in(lib), "faces_available": faces.available()}
+
+
+@app.get("/api/library/people/{person_id}/photos")
+def api_library_person_photos(person_id: str, key: str = None,
+                              x_library_key: str = Header(None)):
+    lib = require_key(x_library_key, None, key)
+    items = library.photos_of(lib, person_id)
+    return {"items": _with_captions(lib, items), "person": person_id}
+
+
+@app.post("/api/library/people/{person_id}/name")
+def api_library_name_person(person_id: str, name: str = "", key: str = None,
+                            x_library_key: str = Header(None)):
+    lib = require_key(x_library_key, None, key)
+    if not library.name_person(lib, person_id, name):
+        raise HTTPException(404, "no such person")
+    return {"id": person_id, "name": (name or "").strip() or None}
+
+
+@app.post("/api/library/people/merge")
+def api_library_merge_people(keep: str, absorb: str, key: str = None,
+                             x_library_key: str = Header(None)):
+    """Fold one person into another, for when clustering split somebody in two.
+
+    A first-class operation rather than an afterthought: greedy clustering
+    depends on arrival order and will sometimes make two piles of one person.
+    Merging by hand takes five seconds; a wrong automatic merge loses
+    information, which is why the threshold errs towards splitting.
+    """
+    lib = require_key(x_library_key, None, key)
+    if not library.merge_people(lib, keep, absorb):
+        raise HTTPException(404, "those two are not both in this library")
+    return {"kept": keep, "absorbed": absorb, "people": library.people_in(lib)}
+
+
+@app.get("/api/library/face/{face_id}/crop")
+def api_library_face_crop(face_id: str, key: str = None, x_library_key: str = Header(None)):
+    lib = require_key(x_library_key, None, key)
+    crop = library.face_crop(lib, face_id)
+    if not crop:
+        raise HTTPException(404, "no such face")
+    return Response(crop, media_type="image/jpeg",
+                    headers={"Cache-Control": "private, max-age=86400"})
+
+
 @app.get("/api/library/settings")
 def api_library_get_settings(key: str = None, x_library_key: str = Header(None)):
     lib = require_key(x_library_key, None, key)
@@ -755,8 +826,8 @@ def api_library_get_settings(key: str = None, x_library_key: str = Header(None))
 
 
 @app.post("/api/library/settings")
-def api_library_set_settings(ai: bool = None, faces: bool = None, key: str = None,
-                             x_library_key: str = Header(None)):
+def api_library_set_settings(ai: bool = None, faces_on: bool = Query(None, alias="faces"),
+                             key: str = None, x_library_key: str = Header(None)):
     """Turn the derived features on or off for this library.
 
     Both are off until somebody asks. Turning `ai` on only affects photographs
@@ -765,8 +836,16 @@ def api_library_set_settings(ai: bool = None, faces: bool = None, key: str = Non
     amount of somebody's money without asking.
     """
     lib = require_key(x_library_key, None, key)
-    updated = library.set_settings(lib, ai=ai, faces=faces)
-    return {"settings": updated, "pending": library.queue_depth(lib)}
+    was = library.settings(lib)
+    updated = library.set_settings(lib, ai=ai, faces=faces_on)
+    # "Off" for biometric data means erased, not hidden. Somebody withdrawing
+    # consent should not have their face vectors sitting in a table waiting to
+    # be switched back on.
+    forgotten = None
+    if was["faces"] and not updated["faces"]:
+        forgotten = library.forget_faces(lib)
+    return {"settings": updated, "pending": library.queue_depth(lib),
+            "forgotten": forgotten}
 
 
 @app.post("/api/library/item/{item_id}/favourite")

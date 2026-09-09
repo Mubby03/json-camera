@@ -161,8 +161,38 @@ back as real files. Setup, including an Android route and the plain `curl` loop
 that works anywhere, is at
 [mubby.space/json-camera/setup](https://mubby.space/json-camera/setup).
 
+Two optional layers sit on top, both off per library until somebody asks.
+
+**Captions and search.** One vision-model pass per photograph at upload,
+stored, never recomputed: a caption, tags, any text legible in the image. That
+turns "the photo of my passport" into a query. It sends the 320 pixel preview
+rather than the photograph, which is about a hundred tokens, and the model is
+`JSONCAM_VISION_MODEL` (Haiku is roughly $0.0012 a photo, Opus about $0.006).
+
+**People.** YuNet finds faces and SFace embeds them, both locally under
+OpenCV, so this costs nothing per photograph and nothing leaves the machine.
+35 ms for a frame with twenty-four faces in it. Clustering is greedy and
+incremental: each new face is compared against one centroid per person, so
+filing the four hundredth photograph costs the same as the fourth.
+
+Two numbers in `web/faces.py` were measured rather than copied. Faces under 40
+pixels on the short edge are discarded, because every false merge in testing
+came from twelve-pixel background spectators where the embedding is noise. And
+the match threshold is 0.5, not OpenCV's published 0.363: that figure is
+calibrated for verification, where a mistake costs one wrong answer, whereas
+clustering chains mistakes, and 0.363 merged three pairs of visibly different
+people. It errs towards splitting one person in two, which the merge button
+fixes in five seconds, over welding two people together, which nothing tells
+you about.
+
+Faces are biometric data about people who mostly did not agree to anything, so
+the switch defaults off and turning it off erases every vector rather than
+hiding it.
+
 Note that HEIC, which is what every iPhone shoots, needs `pillow-heif`. Install
-`jsoncam[heif]` or a phone photo fails as "not an image we can read".
+`jsoncam[heif]` or a phone photo fails as "not an image we can read". Faces need
+`opencv-python-headless` plus `python scripts/get_face_models.py`, about 38 MB
+of weights pinned by sha256.
 
 ## Training on the latents instead of the pixels
 
@@ -327,6 +357,8 @@ jsoncam/rans.py      vectorised interleaved range coder
 jsoncam/codec.py     JSON container, tiling for large images
 jsoncam/meta.py      EXIF extraction + the embedded preview thumbnail
 jsoncam/formats.py   registers HEIC with Pillow, so phone photos open
+web/vision.py        one caption per photo, from the embedded preview
+web/faces.py         YuNet + SFace, and the thresholds that were measured
 jsoncam/train.py     training loop
 jsoncam/data.py      patch cache + dataset
 jsoncam/cli.py       prepare / train / encode / decode / eval / convert / restore

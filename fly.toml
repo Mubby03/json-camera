@@ -21,6 +21,7 @@ primary_region = "jnb"
   PORT = "8080"
   HOST = "0.0.0.0"
   JSONCAM_MODELS = "/home/user/app/checkpoints"
+  JSONCAM_FACE_MODELS = "/home/user/app/checkpoints/faces"
   # Measured on this machine: a 0.79 MP image is about 4s of codec work and a
   # 3.1 MP one is about 18s, which is past the point where a visitor assumes it
   # is broken.  1600 on the long side keeps a phone photo inside a few seconds

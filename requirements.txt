@@ -11,6 +11,7 @@ fastapi
 uvicorn
 python-multipart
 anthropic
+opencv-python-headless
 
 # gradio demo (optional, the web app does not need it)
 gradio

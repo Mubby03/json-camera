@@ -14,6 +14,9 @@ monitor
 tests
 scripts
 node_modules
+# The Dockerfile runs this to fetch the face models at build time, so it has
+# to survive the scripts/ exclusion above.
+!scripts/get_face_models.py
 
 # Only checkpoints/stable is copied by the Dockerfile.
 checkpoints/*
