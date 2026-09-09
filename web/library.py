@@ -152,6 +152,10 @@ MIGRATIONS = (
     "ALTER TABLE items ADD COLUMN favourite INTEGER DEFAULT 0",
     "ALTER TABLE items ADD COLUMN deleted_at REAL",
     "ALTER TABLE items ADD COLUMN place TEXT",
+    # 0 means "resolved under an older wording", which is also what every row
+    # written before this column existed gets. Those are re-resolved rather than
+    # left reading like a postal address forever.
+    "ALTER TABLE items ADD COLUMN place_version INTEGER DEFAULT 0",
 )
 
 
@@ -251,30 +255,57 @@ def inspect_key(key):
 
 NOMINATIM = "https://nominatim.openstreetmap.org/reverse"
 # Three decimal places is about 110 metres, which is the right grain: finer
-# splits one beach into six cells, coarser merges neighbouring districts.
+# splits one beach into six cells, coarser merges neighbouring streets.
 PLACE_GRID = 3
+
+# Zoom 17 is street level. Lower and the answer is a district or a city, which
+# is too coarse to be the "near X" people actually say.
+PLACE_ZOOM = 17
+
+# Bumped when the wording below changes, so cached answers and stored labels
+# from an older shape are re-resolved instead of sitting there in the old
+# format forever.
+PLACE_FORMAT = 2
+
 _last_lookup = [0.0]
 
 
 def _cell(lat, lon):
-    return f"{round(lat, PLACE_GRID)},{round(lon, PLACE_GRID)}"
+    return f"v{PLACE_FORMAT}:{round(lat, PLACE_GRID)},{round(lon, PLACE_GRID)}"
 
 
-def _shorten(payload):
-    """Nominatim returns a full postal address. Keep the part people say aloud."""
-    address = (payload or {}).get("address") or {}
-    local = (address.get("suburb") or address.get("neighbourhood")
-             or address.get("village") or address.get("town")
-             or address.get("city_district") or address.get("hamlet"))
-    city = address.get("city") or address.get("town") or address.get("county")
-    country = address.get("country")
-    parts = [p for p in (local, city, country) if p]
-    # Drop a repeat when the suburb and the city carry the same name.
-    trimmed = []
-    for part in parts:
-        if part not in trimmed:
-            trimmed.append(part)
-    return ", ".join(trimmed[:3]) or (payload or {}).get("display_name")
+# The most recognisable local name, most specific first.
+#
+# Not a postal address. "Dolphin Estate, Eti Osa, Nigeria" is technically
+# correct and nobody has ever said it; "near Stratford" is what a person
+# actually calls that place. Roads sit below neighbourhoods because a district
+# is the more memorable unit for finding a photograph again, but above towns,
+# because in plenty of places the road is the only thing mapped and "near Akala
+# Way" beats "near Ibadan North".
+PLACE_KEYS = ("neighbourhood", "suburb", "quarter", "village", "hamlet",
+              "road", "pedestrian", "town", "city_district", "city")
+
+# Categories where Nominatim's top-level `name` is just the road again rather
+# than a landmark worth naming.
+NOT_A_LANDMARK = ("highway", "place", "boundary", "landuse")
+
+
+def _label(payload):
+    """A short "near somewhere" from a Nominatim answer, or None."""
+    payload = payload or {}
+    address = payload.get("address") or {}
+
+    # A named landmark is the best anchor there is: "near Victoria Park" tells
+    # you more than any street will.
+    name = payload.get("name")
+    if name and payload.get("category") not in NOT_A_LANDMARK:
+        return f"near {name}"
+
+    for key in PLACE_KEYS:
+        value = address.get(key)
+        if value:
+            return f"near {value}"
+    return None
 
 
 def place_for(lat, lon):
@@ -306,13 +337,13 @@ def place_for(lat, lon):
 
         query = urllib.parse.urlencode({
             "lat": f"{lat:.5f}", "lon": f"{lon:.5f}",
-            "format": "jsonv2", "zoom": "14", "addressdetails": "1",
+            "format": "jsonv2", "zoom": str(PLACE_ZOOM), "addressdetails": "1",
         })
         request = urllib.request.Request(
             f"{NOMINATIM}?{query}",
             headers={"User-Agent": "json-camera/1.0 (https://mubby.space/json-camera)"})
         with urllib.request.urlopen(request, timeout=6) as response:
-            name = _shorten(_json.loads(response.read().decode("utf-8")))
+            name = _label(_json.loads(response.read().decode("utf-8")))
     except Exception:
         return None
 
@@ -413,6 +444,43 @@ def analysis_for(lib, item_ids):
             "kind": r["kind"],
         }
     return out
+
+
+def next_place_backfill(limit=1):
+    """Photographs whose place label predates the current wording.
+
+    Rate limiting is the reason this is a queue rather than a migration: OSM
+    allows one lookup a second, so a library of four hundred photographs taken
+    across twenty places is twenty lookups spread over twenty seconds, not one
+    request that hangs.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, library, lat, lon FROM items "
+            "WHERE lat IS NOT NULL AND lon IS NOT NULL "
+            "AND COALESCE(place_version, 0) != ? AND deleted_at IS NULL "
+            "LIMIT ?", (PLACE_FORMAT, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_place(item_id, name):
+    """Record a resolved label, and mark it current even when nothing was found.
+
+    Marking a failure as current is deliberate: without it, a coordinate OSM has
+    no name for would be looked up again on every sweep, forever.
+    """
+    with _connect() as conn:
+        conn.execute("UPDATE items SET place = ?, place_version = ? WHERE id = ?",
+                     (name, PLACE_FORMAT, item_id))
+
+
+def places_pending():
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM items WHERE lat IS NOT NULL "
+            "AND COALESCE(place_version, 0) != ? AND deleted_at IS NULL",
+            (PLACE_FORMAT,)).fetchone()
+    return row["n"]
 
 
 def queue_depth(lib):
@@ -708,7 +776,10 @@ def add(lib, doc, raw_json, source_bytes=None):
         "lens": info.get("lens"),
         "lat": place.get("lat"),
         "lon": place.get("lon"),
+        # Resolved inline when it is cheap, which after the first photo of a
+        # trip it always is: the cache answers from the same 110 metre cell.
         "place": place_for(place.get("lat"), place.get("lon")),
+        "place_version": PLACE_FORMAT if place.get("lat") is not None else 0,
         "fingerprint": (doc.get("model") or {}).get("fingerprint"),
         "preview": blob,
         "preview_type": preview.get("format"),

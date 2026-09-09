@@ -510,33 +510,108 @@ def test_views_do_not_leak_between_libraries(tmp_path, monkeypatch):
 
 
 def test_place_names_are_cached_on_a_grid(tmp_path, monkeypatch):
-    """Two photos from the same spot must not be two network calls."""
+    """Two photos from the same spot must not be two network calls.
+
+    OSM allows one lookup a second, so a day out with forty photographs has to
+    cost one request, not forty.
+    """
     library = _lib(tmp_path, monkeypatch)
 
-    calls = []
-
-    def fake(lat, lon):
-        calls.append((lat, lon))
-        return {"address": {"suburb": "Lekki", "city": "Lagos", "country": "Nigeria"}}
-
-    # Seed the cache the way a real lookup would, then confirm a nearby
-    # coordinate in the same cell never asks again.
-    assert library._shorten(fake(6.4540, 3.4092)) == "Lekki, Lagos, Nigeria"
     with library._connect() as conn:
         conn.execute("INSERT OR REPLACE INTO places (cell, name, asked_at) VALUES (?, ?, ?)",
-                     (library._cell(6.4540, 3.4092), "Lekki, Lagos, Nigeria", 0))
+                     (library._cell(6.4540, 3.4092), "near Dolphin Estate", 0))
 
-    before = len(calls)
-    assert library.place_for(6.45402, 3.40921) == "Lekki, Lagos, Nigeria"
-    assert len(calls) == before          # answered from the cache, no lookup
+    # A coordinate a few metres away lands in the same cell and is answered
+    # without touching the network. If it did reach out, this would take a
+    # second and could fail offline.
+    assert library.place_for(6.45402, 3.40921) == "near Dolphin Estate"
 
 
-def test_place_names_drop_repeated_components(tmp_path, monkeypatch):
-    """"Lagos, Lagos, Nigeria" reads like a bug, because it is one."""
+def test_place_labels_say_near_somewhere_people_recognise():
+    """Not a postal address. "near Stratford" is what a person actually says."""
+    import sys
+
+    sys.path.insert(0, "web")
+    import library
+
+    # A suburb beats the road it contains: the district is the more memorable
+    # unit for finding a photograph again.
+    assert library._label({
+        "name": "Montfichet Road", "category": "highway",
+        "address": {"road": "Montfichet Road", "suburb": "Stratford",
+                    "city": "Greater London", "country": "United Kingdom"},
+    }) == "near Stratford"
+
+    # But where no district is mapped, the road is the only recognisable thing,
+    # and beats the administrative county nobody says out loud.
+    assert library._label({
+        "name": "Secretariat Road", "category": "highway",
+        "address": {"road": "Secretariat Road", "county": "Ibadan North",
+                    "state": "Oyo", "country": "Nigeria"},
+    }) == "near Secretariat Road"
+
+    # A named landmark is the best anchor of all.
+    assert library._label({
+        "name": "Victoria Park", "category": "leisure",
+        "address": {"road": "Grove Road", "suburb": "Hackney"},
+    }) == "near Victoria Park"
+
+    # And a road returned as `name` is not a landmark, so it must not win over
+    # the suburb just because Nominatim put it at the top level.
+    assert library._label({
+        "name": "Grove Road", "category": "highway",
+        "address": {"suburb": "Hackney"},
+    }) == "near Hackney"
+
+    assert library._label({"address": {}}) is None
+    assert library._label(None) is None
+
+
+def test_the_cache_key_changes_when_the_wording_does():
+    """Otherwise old-format labels are served from cache forever."""
+    import sys
+
+    sys.path.insert(0, "web")
+    import library
+
+    assert str(library.PLACE_FORMAT) in library._cell(1.0, 2.0)
+
+
+def test_old_labels_are_queued_for_re_resolution(tmp_path, monkeypatch):
     library = _lib(tmp_path, monkeypatch)
-    assert library._shorten(
-        {"address": {"suburb": "Lagos", "city": "Lagos", "country": "Nigeria"}}
-    ) == "Lagos, Nigeria"
+    lib = library.library_id(library.new_key())
+    doc = {"format": "json-camera/1", "image": {"name": "a.jpg", "width": 4, "height": 4},
+           "codec": {"bitstream_bytes": 10},
+           "meta": {"gps": {"lat": 51.5416, "lon": -0.0042}}}
+
+    # Filed under an older wording, the way every existing row was.
+    item = library.add(lib, doc, json.dumps(doc).encode())
+    with library._connect() as conn:
+        conn.execute("UPDATE items SET place = ?, place_version = 0 WHERE id = ?",
+                     ("Stratford, London, United Kingdom", item))
+
+    assert [r["id"] for r in library.next_place_backfill()] == [item]
+    assert library.places_pending() == 1
+
+    library.set_place(item, "near Stratford")
+    assert library.next_place_backfill() == []
+    assert library.places_pending() == 0
+    assert library.listing(lib)[0]["place"] == "near Stratford"
+
+
+def test_a_coordinate_with_no_name_is_not_asked_about_forever(tmp_path, monkeypatch):
+    """A failed lookup still counts as resolved, or every sweep repeats it."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    doc = {"format": "json-camera/1", "image": {"name": "sea.jpg", "width": 4, "height": 4},
+           "codec": {"bitstream_bytes": 10},
+           "meta": {"gps": {"lat": -40.0, "lon": -140.0}}}
+    item = library.add(lib, doc, json.dumps(doc).encode())
+    with library._connect() as conn:
+        conn.execute("UPDATE items SET place_version = 0 WHERE id = ?", (item,))
+
+    library.set_place(item, None)          # the middle of the Pacific has no name
+    assert library.next_place_backfill() == []
 
 
 # --------------------------------------------------------------------------

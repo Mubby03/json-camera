@@ -67,6 +67,7 @@ HEIF_OK = formats.enable_heif()
 # gives no clue why. The codec itself stays quiet.
 logging.basicConfig(level=logging.WARNING,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
+log = logging.getLogger("jsoncam.web")
 
 app = FastAPI(title="json-camera", docs_url=None, redoc_url=None)
 _models = {}
@@ -539,6 +540,20 @@ WORKER_IDLE = float(os.environ.get("JSONCAM_WORKER_IDLE", "5"))
 _worker_started = False
 
 
+def backfill_one_place():
+    """Re-resolve one photograph's place label. True if it did any work.
+
+    Needs no API key, so this runs even on a machine with captioning turned
+    off entirely: it is only OpenStreetMap.
+    """
+    waiting = library.next_place_backfill(limit=1)
+    if not waiting:
+        return False
+    row = waiting[0]
+    library.set_place(row["id"], library.place_for(row["lat"], row["lon"]))
+    return True
+
+
 def analyse_one():
     """Describe the next waiting photograph. True if it did any work."""
     pending = library.next_pending(limit=1)
@@ -558,23 +573,30 @@ def analyse_one():
 
 def worker_loop():
     while True:
-        try:
-            did_work = analyse_one()
-        except Exception:
-            # A worker that dies takes the whole feature with it silently.
-            did_work = False
+        did_work = False
+        for job in (backfill_one_place, analyse_one):
+            try:
+                did_work = job() or did_work
+            except Exception:
+                # A worker that dies takes the whole feature with it, silently,
+                # and one failing job must not stop the other.
+                log.exception("background job %s failed", job.__name__)
         time.sleep(0 if did_work else WORKER_IDLE)
 
 
 def start_worker():
-    """Start the worker once, and only if captioning could work at all."""
+    """Start the background worker once.
+
+    Started regardless of whether captioning is configured, because place labels
+    are the other job here and those need only OpenStreetMap.
+    """
     global _worker_started
-    if _worker_started or not vision.available():
+    if _worker_started:
         return
     import threading
 
     _worker_started = True
-    threading.Thread(target=worker_loop, daemon=True, name="jsoncam-vision").start()
+    threading.Thread(target=worker_loop, daemon=True, name="jsoncam-worker").start()
 
 
 @app.on_event("startup")
