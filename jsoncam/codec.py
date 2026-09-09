@@ -23,7 +23,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image, ImageOps
 
-from . import rans
+from . import meta, rans
 from .model import JSONCamera
 
 DOWNSCALE = 16          # four stride-2 convolutions
@@ -137,7 +137,8 @@ def model_fingerprint(model):
 
 
 @torch.no_grad()
-def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TILE, name=None):
+def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TILE,
+                 name=None, preview=True, exif=True, gps=True):
     """PIL image -> JSON-ready dict.
 
     `name` is the original filename.  It rides along in the header so a decoder
@@ -153,6 +154,8 @@ def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TI
     model.eval()
     model.to(device)
     prior_cpu = copy.deepcopy(model.prior).cpu().eval()
+    # Read EXIF before the transpose, which consumes the orientation tag.
+    info = meta.extract(img, gps=gps) if exif else None
     # Rotation first: an orientation tag is metadata, and baking it in here means
     # the pixels we encode are the pixels the photographer saw.
     img = ImageOps.exif_transpose(img)
@@ -164,6 +167,7 @@ def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TI
     dropped_alpha = img.mode in ("RGBA", "LA", "PA") or (
         img.mode == "P" and "transparency" in img.info)
     img = img.convert("RGB")
+    thumb = meta.proxy(img) if preview else None
     W, H = img.size
     x = torch.from_numpy(np.asarray(img).copy()).permute(2, 0, 1).float().div(255.0).unsqueeze(0)
 
@@ -188,7 +192,7 @@ def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TI
     blob, lanes = rans.encode(s.reshape(-1), chans, t["freqs"], t["starts"], precision)
 
     payload = _pack(blob, encoding)
-    return {
+    doc = {
         "format": "json-camera/1",
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "model": {**model.config, "fingerprint": model_fingerprint(model)},
@@ -208,6 +212,13 @@ def encode_image(model, img, encoding="b85", precision=12, device="cpu", tile=TI
         },
         "payload": {"encoding": encoding, "data": payload},
     }
+    # Appended rather than interleaved so the two optional blocks sit together
+    # in the file and a reader can skip both at once.
+    if info:
+        doc["meta"] = info
+    if thumb:
+        doc["preview"] = thumb
+    return doc
 
 
 @torch.no_grad()
@@ -275,12 +286,19 @@ def stats(doc, json_path=None):
         "bpp": 8.0 * bits / px,
         "ratio_vs_raw": raw / bits,
     }
+    preview = (doc.get("preview") or {}).get("bytes") or 0
+    if preview:
+        out["preview_bytes"] = preview
+        out["preview_pct"] = 100.0 * preview / bits
     if json_path is not None:
         import os
 
         jb = os.path.getsize(json_path)
         out["json_bytes"] = jb
-        out["text_overhead_pct"] = 100.0 * (jb - bits) / bits
+        # The embedded thumbnail is a deliberate purchase, not container tax, so
+        # take it out before quoting the cost of the JSON armour. Leaving it in
+        # would blame base85 for bytes that bought a visible picture.
+        out["text_overhead_pct"] = 100.0 * (jb - preview - bits) / bits
         out["ratio_vs_raw_json"] = raw / jb
     return out
 

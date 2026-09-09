@@ -2,6 +2,9 @@
 torch
 numpy
 pillow
+# Every photograph an iPhone takes is HEIC, and Pillow cannot open one
+# unaided. Without this the Shortcut's first upload is a 415.
+pillow-heif
 fastapi
 uvicorn
 python-multipart

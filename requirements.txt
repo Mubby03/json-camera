@@ -2,6 +2,8 @@ torch
 torchvision
 numpy
 pillow
+# iPhones shoot HEIC and Pillow cannot open it unaided.
+pillow-heif
 tqdm
 
 # web app

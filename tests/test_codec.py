@@ -370,3 +370,36 @@ def test_lossy_admits_it_discarded_alpha(model):
 
     plain = codec.encode_image(model, Image.fromarray(a[:, :, :3]))
     assert plain["image"]["alpha_discarded"] is False
+
+
+def test_web_layer_orients_before_measuring():
+    """A phone photo held sideways must not 500 the compress endpoint.
+
+    Both encoders bake the EXIF orientation tag in themselves, so the web layer
+    has to do it too before it compares anything. When it did not, the lossy
+    path handed psnr() a 1600x900 original and a 900x1600 reconstruction and the
+    request died with a broadcast error, while the lossless path compared the
+    same mismatched shapes with np.array_equal, which does not raise: it just
+    returned False and accused a bit-exact codec of losing data.
+    """
+    from PIL import ImageOps
+
+    from jsoncam import lossless
+
+    base = Image.effect_noise((160, 90), 40).convert("RGB")
+    exif = base.getexif()
+    exif[274] = 6  # orientation 6: rotate 90 CW, what a sideways phone records
+    buf = io.BytesIO()
+    base.save(buf, "JPEG", quality=88, exif=exif.tobytes())
+
+    # Exactly what web/server.py::api_compress does on the way in.
+    img = Image.open(io.BytesIO(buf.getvalue()))
+    img.load()
+    img = ImageOps.exif_transpose(img)
+    img = img.convert("RGB")
+
+    rec = lossless.decode_dict(lossless.encode_image(img, name="sideways.jpg"))
+
+    # Same shape, so psnr() can subtract them without a broadcast error.
+    assert np.asarray(img).shape == np.asarray(rec).shape
+    assert np.array_equal(np.asarray(img), np.asarray(rec))

@@ -73,18 +73,25 @@ def _resolve(checkpoint):
         "No checkpoint found. Pass checkpoint=..., or train one with `jsoncam train`.")
 
 
-def encode(image, out=None, checkpoint=None, encoding="b85", device="cpu"):
+def encode(image, out=None, checkpoint=None, encoding="b85", device="cpu",
+           preview=True, exif=True, gps=True):
     """Compress an image with the learned codec.
 
     `image` is a path or a PIL image.  Returns the container dict; also writes it
     if `out` is given.
+
+    `preview` embeds a small WebP of the picture so the file can be looked at
+    without the checkpoint, and `exif` carries the capture date, camera and
+    location across so an archive of these can still be sorted.  Turn `gps` off
+    when the files are going to somebody else; see `jsoncam.meta`.
     """
     from . import codec
 
     model, _ = codec.load_checkpoint(_resolve(checkpoint))
     img = _as_image(image)
     name = Path(image).name if isinstance(image, (str, Path)) else None
-    doc = codec.encode_image(model, img, encoding=encoding, device=device, name=name)
+    doc = codec.encode_image(model, img, encoding=encoding, device=device, name=name,
+                             preview=preview, exif=exif, gps=gps)
     if out:
         codec.write_json(doc, out)
     return doc
@@ -110,12 +117,13 @@ def decode(doc, out=None, checkpoint=None, device="cpu"):
     return img
 
 
-def encode_lossless(image, out=None):
+def encode_lossless(image, out=None, preview=True, exif=True, gps=True):
     """Compress with nothing discarded. Needs no checkpoint."""
     from . import codec, lossless
 
     name = Path(image).name if isinstance(image, (str, Path)) else None
-    doc = lossless.encode_image(_as_image(image), name=name)
+    doc = lossless.encode_image(_as_image(image), name=name,
+                                preview=preview, exif=exif, gps=gps)
     if out:
         codec.write_json(doc, out)
     return doc

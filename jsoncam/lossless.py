@@ -43,7 +43,7 @@ import time
 import numpy as np
 from PIL import Image, ImageOps
 
-from . import rans
+from . import meta, rans
 
 FORMAT = "json-camera/lossless/1"
 PRECISION = 12
@@ -154,7 +154,7 @@ def _tables(planes):
 # public API
 
 
-def encode_image(img, name=None):
+def encode_image(img, name=None, preview=True, exif=True, gps=True):
     """PIL image -> JSON-ready dict, with nothing discarded.
 
     Transparency is kept.  An image with an alpha channel gets a fourth plane,
@@ -165,11 +165,13 @@ def encode_image(img, name=None):
     and it costs very little.
     """
     t0 = time.time()
+    info = meta.extract(img, gps=gps) if exif else None
     img = ImageOps.exif_transpose(img)
     icc = img.info.get("icc_profile")
     has_alpha = img.mode in ("RGBA", "LA", "PA") or (
         img.mode == "P" and "transparency" in img.info)
     img = img.convert("RGBA" if has_alpha else "RGB")
+    thumb = meta.proxy(img) if preview else None
     a = np.asarray(img, dtype=np.uint8)
     H, W = a.shape[:2]
 
@@ -196,7 +198,7 @@ def encode_image(img, name=None):
     blob, lanes = rans.encode(syms, chans, freqs, starts, PRECISION)
     del syms, chans
 
-    return {
+    doc = {
         "format": FORMAT,
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "image": {
@@ -218,6 +220,11 @@ def encode_image(img, name=None):
         },
         "payload": {"encoding": "b85", "data": base64.b85encode(blob).decode("ascii")},
     }
+    if info:
+        doc["meta"] = info
+    if thumb:
+        doc["preview"] = thumb
+    return doc
 
 
 def decode_dict(doc):
@@ -267,6 +274,10 @@ def stats(doc, json_path=None):
         "pixels": px, "raw_bytes": raw, "bitstream_bytes": bits,
         "bpp": 8.0 * bits / px, "ratio_vs_raw": raw / bits,
     }
+    preview = (doc.get("preview") or {}).get("bytes") or 0
+    if preview:
+        out["preview_bytes"] = preview
+        out["preview_pct"] = 100.0 * preview / bits
     if json_path is not None:
         jb = os.path.getsize(json_path)
         out["json_bytes"] = jb
