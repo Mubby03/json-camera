@@ -870,3 +870,51 @@ def test_a_person_is_counted_in_photos_not_faces(tmp_path, monkeypatch):
 
     library.merge_people(lib, first, second)
     assert library.people_in(lib)[0]["live"] == 1, "counted faces instead of photos"
+
+
+def test_effort_is_dropped_for_a_model_that_rejects_it(monkeypatch):
+    """Haiku 4.5 rejects output_config.effort, and it is the cheap model.
+
+    Sending it anyway failed every caption silently on exactly the model
+    somebody picks when they are watching their bill.
+    """
+    import sys
+    import types
+
+    sys.path.insert(0, "web")
+    import vision
+
+    calls = []
+
+    class FakeBadRequest(Exception):
+        pass
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            calls.append(kwargs["output_config"])
+            if "effort" in kwargs["output_config"]:
+                raise FakeBadRequest("output_config.effort is not supported for this model")
+            return types.SimpleNamespace(
+                stop_reason="end_turn",
+                content=[types.SimpleNamespace(
+                    type="text",
+                    text='{"caption":"a cat","tags":["cat"],"text":"",'
+                         '"people":0,"kind":"photo"}')],
+            )
+
+    fake = types.ModuleType("anthropic")
+    fake.Anthropic = lambda: types.SimpleNamespace(messages=FakeMessages())
+    fake.BadRequestError = FakeBadRequest
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    monkeypatch.setattr(vision, "available", lambda: True)
+    monkeypatch.setattr(vision, "_effort_ok", {})
+
+    out = vision.describe(b"pretend-webp")
+    assert out is not None, "gave up instead of retrying without effort"
+    assert out["caption"] == "a cat"
+    assert len(calls) == 2 and "effort" in calls[0] and "effort" not in calls[1]
+
+    # And it remembers, so the next photo costs one request rather than two.
+    calls.clear()
+    vision.describe(b"pretend-webp")
+    assert len(calls) == 1 and "effort" not in calls[0]

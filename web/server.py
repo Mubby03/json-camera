@@ -14,6 +14,7 @@ download carries a real Content-Disposition filename instead of a blob URL.
 
 import io
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -61,6 +62,11 @@ torch.set_num_threads(max(1, os.cpu_count() or 1))
 # Register before any request arrives: a Shortcut uploading straight from the
 # camera roll sends HEIC, and without this every one of them is a 415.
 HEIF_OK = formats.enable_heif()
+
+# Without this, vision.log's warnings go nowhere and a library with no captions
+# gives no clue why. The codec itself stays quiet.
+logging.basicConfig(level=logging.WARNING,
+                    format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 app = FastAPI(title="json-camera", docs_url=None, redoc_url=None)
 _models = {}

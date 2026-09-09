@@ -24,7 +24,16 @@ photo keeps its date, its place and its thumbnail.
 
 import base64
 import json
+import logging
 import os
+
+log = logging.getLogger("jsoncam.vision")
+
+# Whether this model accepts output_config.effort. Not every model does: it is
+# rejected outright on Haiku 4.5, which is exactly the model somebody switches
+# to when they want this cheap. Rather than carry a compatibility matrix that
+# goes stale, the first rejection is detected and remembered for the process.
+_effort_ok = {}
 
 # Opus 5 is the default because it is the best model, not because it is the
 # cheapest. On the preview-sized images this sends, expect roughly $0.006 a
@@ -110,37 +119,54 @@ def describe(preview_bytes, media_type="image/webp"):
         import anthropic
 
         client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            # Captioning is a description task, not a reasoning one, so the
-            # cheapest effort is also the right one. Raising it buys nothing here.
-            output_config={
-                "effort": "low",
-                "format": {"type": "json_schema", "schema": SCHEMA},
-            },
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": base64.b64encode(preview_bytes).decode("ascii"),
-                        },
+        message = [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": base64.b64encode(preview_bytes).decode("ascii"),
                     },
-                    {"type": "text", "text": PROMPT},
-                ],
-            }],
-        )
+                },
+                {"type": "text", "text": PROMPT},
+            ],
+        }]
+        schema = {"format": {"type": "json_schema", "schema": SCHEMA}}
+
+        def ask(with_effort):
+            config = dict(schema)
+            if with_effort:
+                # Captioning is a description task, not a reasoning one, so the
+                # cheapest effort is also the right one here.
+                config["effort"] = "low"
+            return client.messages.create(model=MODEL, max_tokens=1024,
+                                          output_config=config, messages=message)
+
+        try:
+            response = ask(_effort_ok.get(MODEL, True))
+        except anthropic.BadRequestError as error:
+            # Haiku 4.5 rejects `effort` outright. Learn that once and carry on
+            # without it, rather than failing every caption on the cheap model.
+            if "effort" not in str(error).lower() or not _effort_ok.get(MODEL, True):
+                raise
+            log.warning("%s rejected output_config.effort; retrying without it", MODEL)
+            _effort_ok[MODEL] = False
+            response = ask(False)
+
         # A safety decline is a real outcome on user-supplied photographs, and it
         # is not an error: the photo simply does not get a caption.
         if getattr(response, "stop_reason", None) == "refusal":
+            log.info("caption declined by safety classifier")
             return None
         text = next(b.text for b in response.content if b.type == "text")
         data = json.loads(text)
-    except Exception:
+    except Exception as error:
+        # Quiet in the sense that the upload survives, not in the sense that
+        # nobody can find out why every caption is missing. The first version of
+        # this swallowed the reason and cost an afternoon.
+        log.warning("captioning failed: %s: %s", type(error).__name__, error)
         return None
 
     tags = [str(t).strip().lower() for t in (data.get("tags") or []) if str(t).strip()]
