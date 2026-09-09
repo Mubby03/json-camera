@@ -345,3 +345,67 @@ def test_one_bad_file_does_not_end_the_run(tmp_path, checkpoint):
     assert "1 converted" in done.stdout
     assert "1 failed" in done.stdout
     assert (library / "good.json").exists()
+
+
+# --------------------------------------------------------------------------
+# keys
+#
+# The server stores only a hash of a key, so it cannot hand a lost one back.
+# What it can do is tell somebody their key is mistyped, which is the failure
+# that actually happens, and the one whose old symptom was the most alarming
+# screen in the app: an empty gallery that looks exactly like deletion.
+
+
+def test_a_fresh_key_passes_its_own_check():
+    import sys
+
+    sys.path.insert(0, "web")
+    import library
+
+    key = library.new_key()
+    assert key.startswith(library.KEY_PREFIX)
+    assert library.inspect_key(key) == "ok"
+
+
+def test_a_single_wrong_character_is_caught():
+    import sys
+
+    sys.path.insert(0, "web")
+    import library
+
+    key = library.new_key()
+    for position in (5, 12, 20, len(key) - 6):
+        broken = list(key)
+        broken[position] = "a" if broken[position] != "a" else "b"
+        assert library.inspect_key("".join(broken)) == "typo", position
+
+
+def test_old_keys_are_never_accused_of_being_typos():
+    """Keys minted before the checksum existed must keep working.
+
+    A checksum test on one fails by construction, so without the version prefix
+    this feature would tell every early user their good key was broken.
+    """
+    import sys
+
+    sys.path.insert(0, "web")
+    import library
+
+    assert library.inspect_key("Kvh6Ye9QVffR0PTaeDq9Hx-ISpRUDE-j") == "legacy"
+    # And it still addresses a library, rather than being refused.
+    assert len(library.library_id("Kvh6Ye9QVffR0PTaeDq9Hx-ISpRUDE-j")) == 32
+
+
+def test_the_key_itself_is_never_stored():
+    """The reason recovery cannot exist, asserted so it stays true."""
+    import sys
+
+    sys.path.insert(0, "web")
+    import library
+
+    key = library.new_key()
+    handle = library.library_id(key)
+    assert key not in handle
+    assert handle != key
+    # Same key, same library, every time: the handle is a pure function of it.
+    assert handle == library.library_id(key)

@@ -531,9 +531,20 @@ LIBRARY_MAX_SIDE = int(os.environ.get("JSONCAM_LIBRARY_MAX_SIDE", str(MAX_SIDE))
 
 
 def require_key(header_key, form_key=None, query_key=None):
-    key = header_key or form_key or query_key
-    if not key or len(key) < 16:
+    key = (header_key or form_key or query_key or "").strip()
+    verdict = library.inspect_key(key)
+    if verdict == "short":
         raise HTTPException(401, "this needs a library key")
+    # A checkable key that fails its own checksum is a typo, and saying so is
+    # the whole point of the checksum: the alternative is silently opening a
+    # different, empty library and letting somebody conclude their photographs
+    # are gone. This leaks nothing, because it says only that the key is
+    # malformed, never whether any library exists or holds anything.
+    if verdict == "typo":
+        raise HTTPException(400, (
+            "That key has a typo in it. One of the characters is wrong, so it does "
+            "not match its own checksum. Nothing has been lost: check it against "
+            "the copy you saved."))
     return library.library_id(key)
 
 
@@ -542,6 +553,19 @@ def api_library_new():
     """Mint a key. Generated here so a browser cannot pick a weak one."""
     key = library.new_key()
     return {"key": key, "library": library.library_id(key)}
+
+
+@app.get("/api/library/check")
+def api_library_check(key: str = None, x_library_key: str = Header(None)):
+    """Is this key well formed?
+
+    Answers only that, and never whether a library exists or has photographs in
+    it, which would make this an oracle for guessing keys. It exists so somebody
+    typing a key off a piece of paper is told about a typo while they are still
+    looking at the field, rather than after they have concluded their library is
+    empty.
+    """
+    return {"verdict": library.inspect_key(x_library_key or key or "")}
 
 
 @app.post("/api/library/upload")

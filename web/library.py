@@ -92,9 +92,60 @@ def library_id(key):
     return hashlib.sha256(f"jsoncam-library-v1:{key}".encode()).hexdigest()[:32]
 
 
+# Keys carry a version prefix and a checksum. Both exist to answer one question
+# the original design could not: is this key wrong, or is this library empty?
+#
+# Without a checksum those two are indistinguishable. A key is not checked
+# against a list of real ones, because there is no such list, so one mistyped
+# character silently addresses a different, empty library. Somebody who has
+# uploaded four hundred photographs then opens the gallery, sees nothing, and
+# reasonably concludes they are gone. That is the worst screen this app can
+# show, and it is caused by a typo.
+#
+# The prefix is what makes the verdict safe to give. Keys minted before this
+# existed are 32 random characters with no checksum, and a checksum test on one
+# would fail and accuse a perfectly good key of being a typo. `jc1_` says "this
+# key was built to be checkable", so anything without it gets no verdict rather
+# than a wrong one.
+KEY_PREFIX = "jc1_"
+KEY_BODY_BYTES = 21          # -> 28 url-safe characters, 168 bits
+KEY_CHECK_CHARS = 4
+
+
+def _check_chars(body):
+    digest = hashlib.sha256(f"jsoncam-key-check-v1:{body}".encode()).digest()
+    return base64.urlsafe_b64encode(digest).decode()[:KEY_CHECK_CHARS]
+
+
 def new_key():
-    """A fresh library key. 32 url-safe characters, generated on the server."""
-    return secrets.token_urlsafe(24)
+    """A fresh library key, self-describing and self-checking."""
+    body = secrets.token_urlsafe(KEY_BODY_BYTES)
+    return f"{KEY_PREFIX}{body}{_check_chars(body)}"
+
+
+def inspect_key(key):
+    """Say what is wrong with a key, when anything can be said.
+
+    Returns one of:
+      "ok"      the checksum agrees, so this is the key it was meant to be
+      "typo"    built to be checkable, and the check fails: a character is wrong
+      "short"   not long enough to be a key at all
+      "legacy"  no verdict available, which is the honest answer for old keys
+
+    Deliberately does not say whether the library exists or has anything in it.
+    That would turn the endpoint into an oracle for guessing keys, and it is not
+    the question anybody is actually asking.
+    """
+    key = (key or "").strip()
+    if len(key) < 16:
+        return "short"
+    if not key.startswith(KEY_PREFIX):
+        return "legacy"
+    rest = key[len(KEY_PREFIX):]
+    if len(rest) <= KEY_CHECK_CHARS:
+        return "typo"
+    body, check = rest[:-KEY_CHECK_CHARS], rest[-KEY_CHECK_CHARS:]
+    return "ok" if check == _check_chars(body) else "typo"
 
 
 def _payload_path(lib, item_id):
