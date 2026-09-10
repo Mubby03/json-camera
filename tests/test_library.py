@@ -1401,3 +1401,161 @@ def test_the_quality_gate_rejects_what_it_cannot_see():
     assert 0 < face_model.MAX_YAW <= 0.5
     assert face_model.MIN_SHARPNESS > 0
     assert face_model.MIN_EYE_RATIO > 0
+
+
+# --------------------------------------------------------------------------
+# putting it right by hand
+#
+# The rule these all check: the machine may not overrule the person, and the
+# person may always overrule the machine.
+
+
+def test_a_rejected_face_is_kept_rather_than_discarded(tmp_path, monkeypatch):
+    """"The model could not see this" and "nobody is there" are different things.
+
+    Only the first is worth offering to somebody who can see perfectly well who
+    it is, and it can only be offered if it was stored.
+    """
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    item = _file(library, lib, "party.jpg")
+    library.add_faces(lib, item, [
+        _face(_vec(1, 0, 0)),
+        {**_face(_vec(0, 1, 0)), "rejected": "turned away"},
+    ])
+
+    seen = library.faces_in_item(lib, item)
+    assert len(seen) == 2
+    usable = [f for f in seen if not f["rejected"]]
+    skipped = [f for f in seen if f["rejected"]]
+    assert len(usable) == 1 and len(skipped) == 1
+    # The rejected one belongs to nobody and never made a person.
+    assert skipped[0]["person"] is None
+    assert len(library.people_in(lib, min_photos=1)) == 1
+    assert [f["id"] for f in library.unidentified_faces(lib)] == [skipped[0]["id"]]
+
+
+def test_assigning_a_rejected_face_does_not_teach_the_matcher(tmp_path, monkeypatch):
+    """Its embedding is why it was rejected.
+
+    Feeding a blur or a silhouette into the matcher would spread one bad face
+    across the whole library, which is the opposite of the correction somebody
+    was making.
+    """
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    item = _file(library, lib, "a.jpg")
+    library.add_faces(lib, item, [{**_face(_vec(0, 1, 0)), "rejected": "too blurred"}])
+    face = library.unidentified_faces(lib)[0]["id"]
+
+    person = library.assign_face(lib, face, name="Mubaraq")
+    assert person
+    assert [p["name"] for p in library.people_in(lib)] == ["Mubaraq"]
+    with library._connect() as conn:
+        looks = conn.execute("SELECT id FROM person_looks WHERE person = ?",
+                             (person,)).fetchall()
+    assert looks == [], "a rejected face taught the matcher"
+
+
+def test_assigning_a_usable_face_does_teach_the_matcher(tmp_path, monkeypatch):
+    """A correction should hold for the next photograph without being repeated."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    library.add_faces(lib, _file(library, lib, "a.jpg"), [_face(_vec(1, 0, 0))])
+    library.add_faces(lib, _file(library, lib, "b.jpg"), [_face(_vec(0, 1, 0))])
+    first, second = (p["id"] for p in library.people_in(lib, min_photos=1))
+
+    stray = [f for f in library.faces_in_item(lib, library.listing(lib)[0]["id"])][0]
+    before = _look_count(library, first)
+    library.assign_face(lib, stray["id"], person_id=first)
+    assert _look_count(library, first) == before + 1
+
+    # And the next photograph of that appearance now lands on the right person.
+    library.add_faces(lib, _file(library, lib, "c.jpg"), [_face(_vec(0, 1, 0))])
+    owners = {f["person"] for f in library.faces_in_item(lib, library.listing(lib)[0]["id"])}
+    assert owners == {first}
+
+
+def _look_count(library, person):
+    with library._connect() as conn:
+        return len(conn.execute("SELECT id FROM person_looks WHERE person = ?",
+                                (person,)).fetchall())
+
+
+def test_tagging_a_photo_with_no_detected_face(tmp_path, monkeypatch):
+    """Half a face, the back of a head, somebody at the edge of the frame."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    known = _file(library, lib, "known.jpg")
+    library.add_faces(lib, known, [_face(_vec(1, 0, 0))])
+    person = library.people_in(lib, min_photos=1)[0]["id"]
+
+    empty = _file(library, lib, "nobody-detected.jpg")
+    library.add_faces(lib, empty, [])
+    assert library.faces_in_item(lib, empty) == []
+
+    assert library.tag_item(lib, empty, person_id=person) == person
+    tagged = library.faces_in_item(lib, empty)
+    assert len(tagged) == 1
+    assert tagged[0]["bbox"] is None and tagged[0]["manual"] is True
+    # They now appear in two photographs, which is what a tag is for.
+    assert library.people_in(lib)[0]["live"] == 2
+    # And it taught the matcher nothing, because no model ever saw it.
+    assert _look_count(library, person) == 1
+
+
+def test_tagging_the_same_person_twice_is_not_two_tags(tmp_path, monkeypatch):
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    library.add_faces(lib, _file(library, lib, "a.jpg"), [_face(_vec(1, 0, 0))])
+    person = library.people_in(lib, min_photos=1)[0]["id"]
+    item = _file(library, lib, "b.jpg")
+
+    library.tag_item(lib, item, person_id=person)
+    library.tag_item(lib, item, person_id=person)
+    assert len(library.faces_in_item(lib, item)) == 1
+
+
+def test_unassigning_leaves_a_real_face_but_removes_a_bare_tag(tmp_path, monkeypatch):
+    """A detected face still exists to be identified later; a tag has nothing left to be."""
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    item = _file(library, lib, "a.jpg")
+    library.add_faces(lib, item, [_face(_vec(1, 0, 0))])
+    person = library.people_in(lib, min_photos=1)[0]["id"]
+    detected = library.faces_in_item(lib, item)[0]["id"]
+
+    other = _file(library, lib, "b.jpg")
+    library.tag_item(lib, other, person_id=person)
+    tag = library.faces_in_item(lib, other)[0]["id"]
+
+    library.unassign_face(lib, tag)
+    assert library.faces_in_item(lib, other) == []
+
+    library.unassign_face(lib, detected)
+    left = library.faces_in_item(lib, item)
+    assert len(left) == 1 and left[0]["person"] is None
+
+
+def test_a_person_left_holding_nothing_is_removed(tmp_path, monkeypatch):
+    library = _lib(tmp_path, monkeypatch)
+    lib = library.library_id(library.new_key())
+    item = _file(library, lib, "a.jpg")
+    library.add_faces(lib, item, [_face(_vec(1, 0, 0))])
+    face = library.faces_in_item(lib, item)[0]["id"]
+
+    library.unassign_face(lib, face)
+    assert library.people_in(lib, min_photos=1) == []
+
+
+def test_assigning_to_a_person_in_another_library_is_refused(tmp_path, monkeypatch):
+    library = _lib(tmp_path, monkeypatch)
+    mine = library.library_id(library.new_key())
+    yours = library.library_id(library.new_key())
+    item = _file(library, mine, "a.jpg")
+    library.add_faces(lib := mine, item, [_face(_vec(1, 0, 0))])
+    library.add_faces(yours, _file(library, yours, "b.jpg"), [_face(_vec(0, 1, 0))])
+    theirs = library.people_in(yours, min_photos=1)[0]["id"]
+    face = library.faces_in_item(mine, item)[0]["id"]
+
+    assert library.assign_face(mine, face, person_id=theirs) is None

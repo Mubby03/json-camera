@@ -965,13 +965,20 @@ def api_library_search(q: str, key: str = None, x_library_key: str = Header(None
 
 
 @app.get("/api/library/people")
-def api_library_people(key: str = None, x_library_key: str = Header(None)):
-    """Everybody found in this library, most photographed first, named ones on top."""
+def api_library_people(key: str = None, everyone: bool = False,
+                       x_library_key: str = Header(None)):
+    """Everybody found in this library, most photographed first, named ones on top.
+
+    `everyone` includes the piles held back for appearing only once, which is
+    what the assignment picker needs: a face somebody is about to identify is
+    very often a one-off that the recurrence rule is hiding.
+    """
     lib = require_key(x_library_key, None, key)
-    return {"people": library.people_in(lib),
+    return {"people": library.people_in(lib, min_photos=1 if everyone else None),
             "hidden": library.hidden_people(lib),
             "min_appearances": library.MIN_APPEARANCES,
             "checking": library.verdicts_pending(),
+            "unidentified": len(library.unidentified_faces(lib, limit=500)),
             "faces_available": faces.available()}
 
 
@@ -1006,6 +1013,60 @@ def api_library_merge_people(keep: str, absorb: str, key: str = None,
     if not library.merge_people(lib, keep, absorb):
         raise HTTPException(404, "those two are not both in this library")
     return {"kept": keep, "absorbed": absorb, "people": library.people_in(lib)}
+
+
+@app.get("/api/library/item/{item_id}/faces")
+def api_library_item_faces(item_id: str, key: str = None, x_library_key: str = Header(None)):
+    """Everyone the detector saw in one photograph, identified or not."""
+    lib = require_key(x_library_key, None, key)
+    return {"faces": library.faces_in_item(lib, item_id),
+            "people": library.people_in(lib, min_photos=1)}
+
+
+@app.post("/api/library/face/{face_id}/assign")
+def api_library_assign_face(face_id: str, person: str = None, name: str = None,
+                            key: str = None, x_library_key: str = Header(None)):
+    """Put a face on somebody, by hand.
+
+    `person` moves it to an existing person; `name` makes a new one; neither
+    detaches it into a person of its own. A usable face also teaches the matcher,
+    so the next photograph lands right without being told again.
+    """
+    lib = require_key(x_library_key, None, key)
+    assigned = library.assign_face(lib, face_id, person_id=person, name=name)
+    if not assigned:
+        raise HTTPException(404, "no such face, or no such person")
+    return {"face": face_id, "person": assigned,
+            "people": library.people_in(lib, min_photos=1)}
+
+
+@app.post("/api/library/item/{item_id}/tag")
+def api_library_tag_item(item_id: str, person: str = None, name: str = None,
+                         key: str = None, x_library_key: str = Header(None)):
+    """Say somebody is in a photograph the detector found no face in."""
+    lib = require_key(x_library_key, None, key)
+    tagged = library.tag_item(lib, item_id, person_id=person, name=name)
+    if not tagged:
+        raise HTTPException(404, "no such photo, or no such person")
+    return {"item": item_id, "person": tagged,
+            "people": library.people_in(lib, min_photos=1)}
+
+
+@app.delete("/api/library/face/{face_id}/person")
+def api_library_unassign_face(face_id: str, key: str = None,
+                              x_library_key: str = Header(None)):
+    lib = require_key(x_library_key, None, key)
+    if not library.unassign_face(lib, face_id):
+        raise HTTPException(404, "no such face")
+    return {"face": face_id, "people": library.people_in(lib, min_photos=1)}
+
+
+@app.get("/api/library/unidentified")
+def api_library_unidentified(key: str = None, x_library_key: str = Header(None)):
+    """Faces belonging to nobody, biggest first: the pile to work through."""
+    lib = require_key(x_library_key, None, key)
+    return {"faces": library.unidentified_faces(lib),
+            "people": library.people_in(lib, min_photos=1)}
 
 
 @app.get("/api/library/face/{face_id}/crop")

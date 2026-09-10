@@ -118,6 +118,13 @@ CREATE TABLE IF NOT EXISTS faces (
     crop      BLOB,          -- a 96px JPEG of the face, for the picker
     score     REAL,
     edge      INTEGER,
+    -- Set when a person put this face where it is. Human assignments are ground
+    -- truth and automatic clustering never revisits them.
+    manual    INTEGER DEFAULT 0,
+    -- Which quality gate this face failed, or NULL when it is usable. A rejected
+    -- face is stored so somebody can identify it by eye, and is never clustered,
+    -- because its embedding describes a blur or a silhouette rather than a face.
+    rejected  TEXT,
     found_at  REAL
 );
 CREATE INDEX IF NOT EXISTS faces_by_item ON faces (item);
@@ -199,6 +206,8 @@ MIGRATIONS = (
     # written before this column existed gets. Those are re-resolved rather than
     # left reading like a postal address forever.
     "ALTER TABLE items ADD COLUMN place_version INTEGER DEFAULT 0",
+    "ALTER TABLE faces ADD COLUMN manual INTEGER DEFAULT 0",
+    "ALTER TABLE faces ADD COLUMN rejected TEXT",
 )
 
 
@@ -729,6 +738,20 @@ def add_faces(lib, item_id, found):
 
     touched, borderline = [], []
     for face in found:
+        if face.get("rejected"):
+            # Stored so a person can identify it by eye, never clustered. Its
+            # embedding is kept only so a manual assignment can decide whether
+            # to trust it, and by default nothing does.
+            with _connect() as conn:
+                conn.execute(
+                    "INSERT INTO faces (id, item, library, person, bbox, embedding, crop, "
+                    "score, edge, rejected, found_at) "
+                    "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
+                    (secrets.token_urlsafe(12).replace("-", "_"), item_id, lib,
+                     json.dumps(face["bbox"]), face_model.to_blob(face["embedding"]),
+                     face["crop"], face["score"], face["edge"], face["rejected"],
+                     time.time()))
+            continue
         vector = face["embedding"]
         with _connect() as conn:
             looks = conn.execute(
@@ -812,6 +835,173 @@ def add_faces(lib, item_id, found):
     for left, right, score in borderline:
         note_borderline(lib, left, right, score)
     return touched
+
+
+# --------------------------------------------------------------------------
+# putting it right by hand
+#
+# Every automatic decision here is a guess with a confidence attached, and some
+# of them are wrong: a face turned away, a child who grew, two piles that are
+# one person. A person looking at the photograph knows the answer instantly, so
+# the job of the software is to get out of the way and record it.
+#
+# Human assignments are marked and are never revisited by clustering. That
+# asymmetry is deliberate: the machine may not overrule the person, and the
+# person may always overrule the machine.
+
+
+def faces_in_item(lib, item_id):
+    """Every face in one photograph, usable or not, with who it belongs to."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT f.id, f.bbox, f.person, f.edge, f.rejected, f.manual, "
+            "       p.name, p.id IS NOT NULL AS assigned "
+            "FROM faces f LEFT JOIN people p ON p.id = f.person "
+            "WHERE f.library = ? AND f.item = ? "
+            "ORDER BY f.rejected IS NOT NULL, f.edge DESC", (lib, item_id)).fetchall()
+    return [{"id": r["id"], "bbox": json.loads(r["bbox"]) if r["bbox"] else None,
+             "person": r["person"], "name": r["name"], "edge": r["edge"],
+             "rejected": r["rejected"], "manual": bool(r["manual"])} for r in rows]
+
+
+def _new_person(conn, lib, name, cover=None, cover_edge=0):
+    person_id = secrets.token_urlsafe(9).replace("-", "_")
+    conn.execute(
+        "INSERT INTO people (id, library, name, centroid, face_count, cover, "
+        "cover_edge, updated_at) VALUES (?, ?, ?, NULL, 0, ?, ?, ?)",
+        (person_id, lib, (name or "").strip()[:60] or None, cover, cover_edge, time.time()))
+    return person_id
+
+
+def assign_face(lib, face_id, person_id=None, name=None):
+    """Put a face on a person, by hand.
+
+    With `person_id`, moves it there. With `name` and no id, makes a new person.
+    With neither, detaches it into a person of its own.
+
+    A usable face also contributes its embedding as a look of the target, so the
+    correction teaches the matcher and the next photograph lands right without
+    being told again. A rejected face never does: it is why it was rejected, and
+    feeding a blur into the matcher would spread one mistake across the library.
+    """
+    import faces as face_model
+
+    with _connect() as conn:
+        face = conn.execute(
+            "SELECT id, person, embedding, edge, rejected FROM faces "
+            "WHERE library = ? AND id = ?", (lib, face_id)).fetchone()
+        if not face:
+            return None
+
+        if person_id:
+            target = conn.execute("SELECT id FROM people WHERE library = ? AND id = ?",
+                                  (lib, person_id)).fetchone()
+            if not target:
+                return None
+            person = person_id
+        else:
+            person = _new_person(conn, lib, name, cover=face_id,
+                                 cover_edge=face["edge"] or 0)
+
+        conn.execute("UPDATE faces SET person = ?, manual = 1 WHERE id = ?", (person, face_id))
+
+        if not face["rejected"] and face["embedding"]:
+            conn.execute(
+                "INSERT INTO person_looks (id, person, library, centroid, face_count, "
+                "created_at) VALUES (?, ?, ?, ?, 1, ?)",
+                (secrets.token_urlsafe(9).replace("-", "_"), person, lib,
+                 face["embedding"], time.time()))
+
+        _recount(conn, lib, [p for p in (person, face["person"]) if p])
+    return person
+
+
+def tag_item(lib, item_id, person_id=None, name=None):
+    """Say somebody is in a photograph when no face was detected at all.
+
+    Half a face, the back of a head, somebody at the edge of the frame. The
+    detector found nothing, and a person can see exactly who it is. Recorded as
+    a face row with no box and no embedding: it counts towards the person
+    appearing in that photograph, and contributes nothing to matching, which is
+    the correct amount for something no model ever looked at.
+    """
+    with _connect() as conn:
+        item = conn.execute("SELECT id FROM items WHERE library = ? AND id = ?",
+                            (lib, item_id)).fetchone()
+        if not item:
+            return None
+        if person_id:
+            target = conn.execute("SELECT id FROM people WHERE library = ? AND id = ?",
+                                  (lib, person_id)).fetchone()
+            if not target:
+                return None
+            person = person_id
+        else:
+            person = _new_person(conn, lib, name)
+
+        already = conn.execute(
+            "SELECT id FROM faces WHERE library = ? AND item = ? AND person = ?",
+            (lib, item_id, person)).fetchone()
+        if already:
+            return person
+
+        conn.execute(
+            "INSERT INTO faces (id, item, library, person, bbox, embedding, crop, "
+            "score, edge, manual, rejected, found_at) "
+            "VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, 1, NULL, ?)",
+            (secrets.token_urlsafe(12).replace("-", "_"), item_id, lib, person, time.time()))
+        _recount(conn, lib, [person])
+    return person
+
+
+def unassign_face(lib, face_id):
+    """Take a face off whoever it is on, without deleting it.
+
+    A manual tag with no box has nothing left to be, so it goes entirely.
+    """
+    with _connect() as conn:
+        face = conn.execute(
+            "SELECT person, bbox FROM faces WHERE library = ? AND id = ?",
+            (lib, face_id)).fetchone()
+        if not face:
+            return False
+        if face["bbox"] is None:
+            conn.execute("DELETE FROM faces WHERE library = ? AND id = ?", (lib, face_id))
+        else:
+            conn.execute(
+                "UPDATE faces SET person = NULL, manual = 0 WHERE library = ? AND id = ?",
+                (lib, face_id))
+        if face["person"]:
+            _recount(conn, lib, [face["person"]])
+    return True
+
+
+def _recount(conn, lib, person_ids):
+    """Keep face_count honest, and drop anybody left holding nothing."""
+    for person in set(person_ids):
+        row = conn.execute("SELECT COUNT(*) AS n FROM faces WHERE person = ?",
+                           (person,)).fetchone()
+        if row["n"]:
+            conn.execute("UPDATE people SET face_count = ?, updated_at = ? WHERE id = ?",
+                         (row["n"], time.time(), person))
+        else:
+            conn.execute("DELETE FROM person_looks WHERE person = ?", (person,))
+            conn.execute("DELETE FROM people WHERE library = ? AND id = ?", (lib, person))
+
+
+def unidentified_faces(lib, limit=200):
+    """Faces belonging to nobody: the pile to work through by hand.
+
+    Mostly ones a gate refused, which is exactly the set somebody asked to be
+    able to fix.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT f.id, f.item, f.edge, f.rejected FROM faces f "
+            "JOIN items i ON i.id = f.item AND i.deleted_at IS NULL "
+            "WHERE f.library = ? AND f.person IS NULL AND f.crop IS NOT NULL "
+            "ORDER BY f.edge DESC LIMIT ?", (lib, limit)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def note_borderline(lib, left, right, similarity):

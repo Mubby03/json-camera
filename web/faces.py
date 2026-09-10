@@ -139,11 +139,20 @@ def _load():
     return _models["det"], _models["rec"]
 
 
-def find(image):
-    """Every usable face in a PIL image.
+def find(image, keep_rejected=True):
+    """Every face in a PIL image, with the unusable ones marked rather than dropped.
 
-    Returns a list of dicts with a normalised bounding box, a unit-length
-    128-float embedding, a small JPEG crop and the detector's confidence.
+    Returns dicts with a normalised bounding box, a unit-length 128-float
+    embedding, a small JPEG crop and the detector's confidence. A face that
+    fails a gate carries `rejected` naming which one, and must never be
+    clustered: its embedding describes a silhouette or a blur, not a person.
+
+    They are kept anyway, because "the model could not see this face" and "there
+    is nobody there" are different things, and only the first one is worth
+    offering to a person who can see perfectly well who it is. The gates decide
+    what the machine acts on; they should not decide what somebody is allowed to
+    correct.
+
     Returns an empty list on any failure: a photograph must still upload when
     the face models are missing or a frame confuses the detector.
     """
@@ -167,19 +176,13 @@ def find(image):
             x, y, box_w, box_h = (float(v) for v in row[:4])
             score = float(row[-1])
             edge = min(box_w, box_h)
-            if edge < MIN_EDGE:
-                continue                      # too small to identify anybody
 
             # YuNet hands back five landmarks after the box: right eye, left
             # eye, nose tip, then the two mouth corners.
             right_eye, left_eye, nose = row[4:6], row[6:8], row[8:10]
             eye_gap = float(np.linalg.norm(left_eye - right_eye))
-            if eye_gap / max(edge, 1e-6) < MIN_EYE_RATIO:
-                continue                      # eyes too close together to be face-on
             eye_mid_x = (float(left_eye[0]) + float(right_eye[0])) / 2
             yaw = abs(float(nose[0]) - eye_mid_x) / max(eye_gap, 1e-6)
-            if yaw > MAX_YAW:
-                continue                      # turned away; the embedding is a silhouette
 
             top, left = max(0, int(y)), max(0, int(x))
             patch = bgr[top:int(y + box_h), left:int(x + box_w)]
@@ -187,8 +190,18 @@ def find(image):
                 continue
             sharpness = float(cv2.Laplacian(
                 cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var())
-            if sharpness < MIN_SHARPNESS:
-                continue                      # too blurred to describe a person
+
+            rejected = None
+            if edge < MIN_EDGE:
+                rejected = "too small"
+            elif eye_gap / max(edge, 1e-6) < MIN_EYE_RATIO:
+                rejected = "not facing the camera"
+            elif yaw > MAX_YAW:
+                rejected = "turned away"
+            elif sharpness < MIN_SHARPNESS:
+                rejected = "too blurred"
+            if rejected and not keep_rejected:
+                continue
 
             aligned = recogniser.alignCrop(bgr, row)
             vector = recogniser.feature(aligned)[0].astype("float32")
@@ -212,6 +225,9 @@ def find(image):
                 "crop": buffer.getvalue(),
                 "score": round(score, 4),
                 "edge": int(edge),
+                # Which gate this failed, or None when it is usable. Anything
+                # with a reason here must not be clustered.
+                "rejected": rejected,
                 "yaw": round(yaw, 3),
                 "sharpness": round(sharpness, 1),
                 # One number for "how much should this face be trusted", used to
