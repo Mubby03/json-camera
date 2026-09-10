@@ -903,9 +903,12 @@ async def _store_one(lib, file, model_id, mode, gps):
             found = faces.find(img)
             if found:
                 library.add_faces(lib, item_id, found)
-            people_found = len(found)
+            people_found = len([f for f in found if not f.get("rejected")])
         except Exception:
-            pass          # a photograph must upload even if this misbehaves
+            # A photograph must still upload if this misbehaves, but silence
+            # here already cost one debugging session: "0 faces" and "faces
+            # crashed" looked identical from outside.
+            log.exception("face grouping failed for %s", item_id)
 
     return {
         "id": item_id,
