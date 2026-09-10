@@ -63,6 +63,10 @@ CREATE TABLE IF NOT EXISTS items (
     fingerprint  TEXT,
     preview      BLOB,
     preview_type TEXT,
+    -- A larger thumbnail for the gallery, generated at upload from the image
+    -- already in memory. Not part of the file format; see GALLERY_THUMB.
+    thumb        BLOB,
+    thumb_side   INTEGER DEFAULT 0,
     meta         TEXT,
     favourite    INTEGER DEFAULT 0,
     -- Soft delete, the way every photo app does it: a deleted photo is out of
@@ -208,7 +212,79 @@ MIGRATIONS = (
     "ALTER TABLE items ADD COLUMN place_version INTEGER DEFAULT 0",
     "ALTER TABLE faces ADD COLUMN manual INTEGER DEFAULT 0",
     "ALTER TABLE faces ADD COLUMN rejected TEXT",
+    # A larger thumbnail for the gallery. Deliberately not in the container:
+    # the embedded 320px preview is part of the file format and has to stay
+    # small enough to be worth carrying, while this is a server-side cache for
+    # one gallery and can be regenerated from the photograph whenever.
+    "ALTER TABLE items ADD COLUMN thumb BLOB",
+    "ALTER TABLE items ADD COLUMN thumb_side INTEGER DEFAULT 0",
 )
+
+# The long edge of the stored gallery thumbnail.
+#
+# The embedded preview is 320px, which is crisp for a grid tile up to 160 CSS
+# pixels and blurred for anything larger. That was fine on a phone and wrong
+# everywhere else: the Days view is the default, its lead tile can be 480 CSS
+# pixels wide on a laptop, and a 320px image stretched over that looks exactly
+# as bad as it sounds.
+#
+# 640 covers every regular tile at 2x device pixels and costs about 45 KB a
+# photograph, measured on DIV2K. Going to 768 buys one more doubling on two
+# decorative tiles for another 17 KB each, which is not a trade worth making
+# across a whole library.
+GALLERY_THUMB = int(os.environ.get("JSONCAM_GALLERY_THUMB", "640"))
+GALLERY_THUMB_QUALITY = int(os.environ.get("JSONCAM_GALLERY_THUMB_QUALITY", "72"))
+
+
+def make_gallery_thumb(image):
+    """A gallery-sized WebP from a PIL image, or None."""
+    try:
+        import io
+
+        from PIL import Image, ImageOps
+
+        thumb = ImageOps.contain(image.convert("RGB"),
+                                 (GALLERY_THUMB, GALLERY_THUMB), Image.LANCZOS)
+        buffer = io.BytesIO()
+        thumb.save(buffer, "WEBP", quality=GALLERY_THUMB_QUALITY, method=5)
+        return buffer.getvalue(), max(thumb.size)
+    except Exception:
+        return None, 0
+
+
+def store_gallery_thumb(item_id, blob, side):
+    with _connect() as conn:
+        conn.execute("UPDATE items SET thumb = ?, thumb_side = ? WHERE id = ?",
+                     (blob, side, item_id))
+
+
+def gallery_thumb(lib, item_id):
+    """The large thumbnail, or None when this photograph has not got one yet."""
+    with _connect() as conn:
+        row = conn.execute("SELECT thumb FROM items WHERE library = ? AND id = ?",
+                           (lib, item_id)).fetchone()
+    return row["thumb"] if row and row["thumb"] else None
+
+
+def next_thumb_backfill(limit=1):
+    """Photographs filed before gallery thumbnails existed.
+
+    Making one means decoding the photograph, which is seconds of neural
+    network, so this is background work and not something a page load triggers.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, library FROM items WHERE deleted_at IS NULL "
+            "AND COALESCE(thumb_side, 0) < ? LIMIT ?", (GALLERY_THUMB, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def thumbs_pending():
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM items WHERE deleted_at IS NULL "
+            "AND COALESCE(thumb_side, 0) < ?", (GALLERY_THUMB,)).fetchone()
+    return row["n"]
 
 
 def _connect():
@@ -492,6 +568,7 @@ def totals():
         "places_cached": placed["n"] or 0,
         "by_model": [{"model": r["model"], "photos": r["n"]} for r in models],
         "places_pending": places_pending(),
+        "thumbs_pending": thumbs_pending(),
     }
 
 

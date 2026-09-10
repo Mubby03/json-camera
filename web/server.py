@@ -657,6 +657,38 @@ def adjudicate_one():
     return True
 
 
+def backfill_one_thumb():
+    """Give one older photograph a gallery-sized thumbnail. True if it worked.
+
+    This one really does decode the photograph, which is seconds, so it lives in
+    the worker and never on a request. Existing libraries catch up quietly while
+    falling back to the small preview in the meantime.
+    """
+    waiting = library.next_thumb_backfill(limit=1)
+    if not waiting:
+        return False
+    row = waiting[0]
+    body = library.payload(row["library"], row["id"])
+    if body is None:
+        library.store_gallery_thumb(row["id"], None, library.GALLERY_THUMB)
+        return True
+    try:
+        doc = json.loads(body)
+        if doc.get("format") == lossless.FORMAT:
+            img = lossless.decode_dict(doc)
+        else:
+            img = codec.decode_dict(load_model(default_model_id()), doc, device="cpu")
+        thumb, side = library.make_gallery_thumb(img)
+        library.store_gallery_thumb(row["id"], thumb, side or library.GALLERY_THUMB)
+    except Exception:
+        # Mark it done anyway: a photograph that cannot be decoded will not
+        # decode on the next sweep either, and retrying forever would keep the
+        # worker permanently busy on one broken file.
+        log.exception("could not build a gallery thumbnail for %s", row["id"])
+        library.store_gallery_thumb(row["id"], None, library.GALLERY_THUMB)
+    return True
+
+
 def analyse_one():
     """Describe the next waiting photograph. True if it did any work."""
     pending = library.next_pending(limit=1)
@@ -677,7 +709,8 @@ def analyse_one():
 def worker_loop():
     while True:
         did_work = False
-        for job in (backfill_one_place, adjudicate_one, analyse_one):
+        for job in (backfill_one_place, adjudicate_one, analyse_one,
+                    backfill_one_thumb):
             try:
                 did_work = job() or did_work
             except Exception:
@@ -886,6 +919,12 @@ async def _store_one(lib, file, model_id, mode, gps):
 
     body = json.dumps(doc, separators=(",", ":")).encode("utf-8")
     item_id = library.add(lib, doc, body, source_bytes=len(raw))
+
+    # The gallery thumbnail, from the image already in hand. Doing it later
+    # would mean decoding the photograph again for something we are holding.
+    thumb, side = library.make_gallery_thumb(img)
+    if thumb:
+        library.store_gallery_thumb(item_id, thumb, side)
     wants = library.settings(lib)
     # Queued, not run: the Shortcut is waiting on this response and the caption
     # is worth nothing to it.
@@ -1139,8 +1178,22 @@ def api_library_empty_trash(key: str = None, x_library_key: str = Header(None)):
 
 
 @app.get("/api/library/thumb/{item_id}")
-def api_library_thumb(item_id: str, key: str = None, x_library_key: str = Header(None)):
+def api_library_thumb(item_id: str, size: str = "small", key: str = None,
+                      x_library_key: str = Header(None)):
+    """A thumbnail, at one of two sizes.
+
+    `small` is the 320px preview embedded in the file itself, which costs
+    nothing to serve and is crisp up to a 160 pixel tile. `large` is the 640px
+    copy the server keeps for the gallery, for the tiles that are bigger than
+    that, and falls back to the small one for photographs filed before those
+    existed rather than 404ing at a grid.
+    """
     lib = require_key(x_library_key, None, key)
+    if size == "large":
+        big = library.gallery_thumb(lib, item_id)
+        if big:
+            return Response(big, media_type="image/webp",
+                            headers={"Cache-Control": "private, max-age=86400"})
     row = library.get(lib, item_id)
     if not row or not row["preview"]:
         raise HTTPException(404, "no preview for that item")
