@@ -257,10 +257,16 @@ def build_status(repo, log_path=None):
     # than presenting someone else's lambda as this run's.
     config = {}
     if "lmbda" not in header:
-        for k, v in read_run_config(repo / "scripts" / "run_training.sh").items():
+        # out/train_sharp.log was launched by scripts/run_training_sharp.sh;
+        # the plain log by the plain script.
+        suffix = log.stem[len("train"):] if log.stem.startswith("train") else ""
+        script = repo / "scripts" / f"run_training{suffix}.sh"
+        if not script.exists():
+            script = repo / "scripts" / "run_training.sh"
+        for k, v in read_run_config(script).items():
             config[k] = v
         if config:
-            config["_inferred"] = "from scripts/run_training.sh, may not match this run"
+            config["_inferred"] = f"from scripts/{script.name}, may not match this run"
     config.update({k: v for k, v in header.items() if v is not None})
 
     total = int(config.get("epochs_total") or config.get("epochs") or 0)
