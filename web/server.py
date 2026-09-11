@@ -1606,6 +1606,49 @@ async def api_chat_post(text: str = Form(...), who: str = Form("mubaraq"), key: 
 
 
 # --------------------------------------------------------------------------
+# training status
+#
+# The training machine is a laptop behind NAT; the phone is anywhere. So the
+# laptop pushes a small JSON status here on a timer (monitor/push.py) and the
+# chat page reads it back. Same key as the chat, same volume, same reasoning:
+# a status that lived in memory would vanish with the idle stop.
+
+TRAINING_FILE = CHAT_DIR / "training.json"
+
+
+@app.get("/api/training")
+def api_training_get(key: str = ""):
+    check_key(key)
+    if not TRAINING_FILE.exists():
+        return {"status": None, "now": time.time()}
+    try:
+        return {"status": json.loads(TRAINING_FILE.read_text(encoding="utf-8")),
+                "now": time.time()}
+    except ValueError:
+        return {"status": None, "now": time.time()}
+
+
+@app.post("/api/training")
+async def api_training_post(status: str = Form(...), key: str = Form("")):
+    check_key(key)
+    if len(status) > 512 * 1024:
+        raise HTTPException(413, "status too large")
+    try:
+        parsed = json.loads(status)
+    except ValueError:
+        raise HTTPException(400, "status is not JSON")
+    if not isinstance(parsed, dict):
+        raise HTTPException(400, "status must be an object")
+    parsed["received"] = time.time()
+    CHAT_DIR.mkdir(parents=True, exist_ok=True)
+    # Write whole or not at all: a reader must never see half a file.
+    tmp = TRAINING_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(parsed), encoding="utf-8")
+    os.replace(tmp, TRAINING_FILE)
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------
 # pages
 
 

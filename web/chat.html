@@ -79,6 +79,58 @@
   }
   button.send:disabled{opacity:.45}
 
+  /* Training panel. A strip under the header on a phone, opened with a tap; a
+     sidebar beside the conversation once the window is wide enough for one. */
+  #train{background:var(--bar);border-bottom:1px solid var(--line);flex:none;
+         font-size:13px;color:var(--soft)}
+  #train[hidden]{display:none}
+  #train .strip{display:flex;align-items:center;gap:10px;padding:9px 14px;cursor:pointer;
+                user-select:none;-webkit-tap-highlight-color:transparent}
+  #train .strip:focus-visible{outline:2px solid var(--me);outline-offset:-2px}
+  #train .bar{flex:1;height:8px;border-radius:4px;background:#e4e8ed;overflow:hidden;min-width:60px}
+  #train .bar i{display:block;height:100%;width:0;background:var(--me);border-radius:4px;
+                transition:width .5s ease}
+  #train .pct{font:600 13px var(--mono);color:var(--ink);min-width:3.2em;text-align:right}
+  #train .brief{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--soft)}
+  #train .brief b{color:var(--ink);font-weight:600}
+  #train .caret{flex:none;transition:transform .2s;color:var(--faint)}
+  #train.open .caret{transform:rotate(180deg)}
+  #train .body{display:none;padding:2px 14px 14px;border-top:1px dashed var(--line)}
+  #train.open .body{display:block}
+  #train .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}
+  #train .stat{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  #train .stat .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
+  #train .stat .v{font:600 17px/1.25 var(--sans);color:var(--ink);font-variant-numeric:tabular-nums;
+                  letter-spacing:-.01em}
+  #train .stat .v small{font-size:11px;font-weight:400;color:var(--soft)}
+  #train .stat .d{font:11px var(--mono);color:var(--faint)}
+  #train .stat .d.up{color:var(--me)}
+  #train .stat .d.down{color:#d9534f}
+  #train svg{display:block;width:100%;height:auto;overflow:visible}
+  #train .legend{display:flex;gap:14px;font-size:11px;color:var(--faint);margin-top:4px}
+  #train .legend i{display:inline-block;width:10px;height:3px;border-radius:2px;vertical-align:middle;margin-right:5px}
+  #train .foot{font:11.5px/1.5 var(--mono);color:var(--faint);margin-top:10px;white-space:pre-wrap}
+  #train .foot b{color:var(--soft);font-weight:600}
+  #train.stale .bar i{background:#c3ccd6}
+  #train.stale .pct{color:var(--faint)}
+  #train .step{font:12px var(--mono);color:var(--soft);margin-top:8px}
+  #train .step i{display:block;height:4px;border-radius:2px;background:#e4e8ed;margin-top:5px;overflow:hidden}
+  #train .step i b{display:block;height:100%;width:0;background:#8fd4b0;transition:width .35s}
+
+  @media (min-width: 900px) {
+    body{display:grid;grid-template-columns:1fr 340px;
+         grid-template-rows:auto 1fr auto;
+         grid-template-areas:"header header" "log train" "footer train"}
+    header{grid-area:header} #log{grid-area:log} footer{grid-area:footer}
+    body:has(#train[hidden]){grid-template-columns:1fr;grid-template-areas:"header" "log" "footer"}
+    #train{grid-area:train;border-bottom:0;border-left:1px solid var(--line);overflow-y:auto}
+    #train .strip{cursor:default;padding-top:14px}
+    #train .caret{display:none}
+    #train .body{display:block;border-top:0;padding-top:0}
+    #train .stats{grid-template-columns:1fr 1fr}
+  }
+  @media (prefers-reduced-motion: reduce){ #train .bar i,#train .step i b{transition:none} }
+
   #gate{position:fixed;inset:0;background:var(--bg);z-index:50;display:flex;
         align-items:center;justify-content:center;padding:26px}
   #gate .box{background:#fff;border:1px solid var(--line);border-radius:10px;
@@ -110,6 +162,22 @@
   <h1>json<b>camera</b></h1>
   <span class="state" id="state">connecting</span>
 </header>
+
+<aside id="train" hidden aria-label="training progress">
+  <div class="strip" id="train-strip" role="button" tabindex="0" aria-expanded="false" aria-controls="train-body">
+    <span class="pct" id="train-pct">0%</span>
+    <span class="bar"><i id="train-bar"></i></span>
+    <span class="brief" id="train-brief">waiting for the run</span>
+    <span class="caret" aria-hidden="true">&#9662;</span>
+  </div>
+  <div class="body" id="train-body">
+    <div class="stats" id="train-stats"></div>
+    <figure style="margin:0" id="train-chart"></figure>
+    <div class="legend"><span><i style="background:#35a86b"></i>val PSNR</span><span><i style="background:#3b7dd8"></i>train PSNR</span><span><i style="background:#e3a21a"></i>val bpp</span></div>
+    <div class="step" id="train-step"></div>
+    <div class="foot" id="train-foot"></div>
+  </div>
+</aside>
 
 <div id="log"><div class="empty">No messages yet. Say something and it reaches the Mac.</div></div>
 
@@ -226,7 +294,140 @@
   });
   send.addEventListener('click', submit);
 
-  function start() { scroll(true); poll(); }
+  /* ---- training panel ---- */
+  const T = {
+    el: $('train'), strip: $('train-strip'), pct: $('train-pct'), bar: $('train-bar'),
+    brief: $('train-brief'), stats: $('train-stats'), chart: $('train-chart'),
+    step: $('train-step'), foot: $('train-foot'), open: localStorage.getItem('jc_train_open') === '1',
+  };
+  function toggleTrain() {
+    T.open = !T.open;
+    T.el.classList.toggle('open', T.open);
+    T.strip.setAttribute('aria-expanded', String(T.open));
+    try { localStorage.setItem('jc_train_open', T.open ? '1' : '0'); } catch (_) {}
+  }
+  T.strip.addEventListener('click', toggleTrain);
+  T.strip.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleTrain(); } });
+  T.el.classList.toggle('open', T.open);
+  T.strip.setAttribute('aria-expanded', String(T.open));
+
+  const fmt = (v, d) => (v == null || isNaN(v)) ? '—' : Number(v).toFixed(d);
+  const hhmm = iso => new Date(iso).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  const hm = sec => { sec = Math.max(0, sec); const h = Math.floor(sec/3600), m = Math.round((sec%3600)/60); return h ? `${h}h ${m}m` : `${m}m`; };
+
+  function stat(k, v, unit, delta, better) {
+    let d = '';
+    if (delta != null && !isNaN(delta)) {
+      const good = better === 'up' ? delta > 0 : delta < 0;
+      d = `<div class="d ${delta === 0 ? '' : (good ? 'up' : 'down')}">${delta > 0 ? '+' : ''}${fmt(delta, 2)} vs last epoch</div>`;
+    }
+    return `<div class="stat"><div class="k">${k}</div><div class="v">${v}${unit ? ` <small>${unit}</small>` : ''}</div>${d}</div>`;
+  }
+
+  function chart(rows) {
+    const withVal = rows.filter(r => r.val_psnr != null);
+    if (rows.length < 1) { T.chart.innerHTML = ''; return; }
+    const W = 320, H = 120, L = 30, R = 30, Tp = 8, B = 18;
+    const xs = rows.map(r => r.epoch);
+    const xmin = 1, xmax = Math.max(2, xs[xs.length - 1]);
+    const ps = rows.flatMap(r => [r.val_psnr, r.train_psnr]).filter(v => v != null);
+    let pmin = Math.floor(Math.min(...ps) - 0.5), pmax = Math.ceil(Math.max(...ps) + 0.5);
+    if (pmax - pmin < 2) pmax = pmin + 2;
+    const bs = rows.map(r => r.val_bpp).filter(v => v != null);
+    let bmin = bs.length ? Math.floor(Math.min(...bs) * 10) / 10 - 0.1 : 0, bmax = bs.length ? Math.ceil(Math.max(...bs) * 10) / 10 + 0.1 : 1;
+    if (bmax - bmin < 0.2) bmax = bmin + 0.2;
+    const X = e => L + (e - xmin) / (xmax - xmin) * (W - L - R);
+    const Y = p => Tp + (1 - (p - pmin) / (pmax - pmin)) * (H - Tp - B);
+    const Yb = b => Tp + (1 - (b - bmin) / (bmax - bmin)) * (H - Tp - B);
+    const line = (key, y, color, dash) => {
+      const pts = rows.filter(r => r[key] != null).map(r => `${X(r.epoch).toFixed(1)},${y(r[key]).toFixed(1)}`);
+      if (!pts.length) return '';
+      const dots = rows.filter(r => r[key] != null).map(r => `<circle cx="${X(r.epoch).toFixed(1)}" cy="${y(r[key]).toFixed(1)}" r="2.2" fill="${color}"/>`).join('');
+      return `<polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="1.8" ${dash ? 'stroke-dasharray="3 3"' : ''} stroke-linejoin="round"/>${dots}`;
+    };
+    const grid = [];
+    for (let i = 0; i <= 3; i++) {
+      const p = pmin + (pmax - pmin) * i / 3, b = bmin + (bmax - bmin) * i / 3;
+      grid.push(`<line x1="${L}" x2="${W - R}" y1="${Y(p).toFixed(1)}" y2="${Y(p).toFixed(1)}" stroke="#e4e8ed"/>`,
+                `<text x="${L - 4}" y="${(Y(p) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="#8b95a3">${p.toFixed(1)}</text>`,
+                `<text x="${W - R + 4}" y="${(Yb(b) + 3.5).toFixed(1)}" font-size="9" fill="#c28a0c">${b.toFixed(2)}</text>`);
+    }
+    const ticks = [];
+    const every = xmax > 12 ? Math.ceil(xmax / 6) : 1;
+    for (let e = xmin; e <= xmax; e += every) ticks.push(`<text x="${X(e).toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="9" fill="#8b95a3">${e}</text>`);
+    T.chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="PSNR and bits per pixel by epoch">${grid.join('')}${ticks.join('')}` +
+      line('train_psnr', Y, '#3b7dd8', true) + line('val_bpp', Yb, '#e3a21a', false) + line('val_psnr', Y, '#35a86b', false) + `</svg>`;
+  }
+
+  function renderTrain(status, now) {
+    if (!status) { T.el.hidden = true; return; }
+    T.el.hidden = false;
+    const rows = status.epochs || [], cfg = status.config || {}, cur = status.current, eta = status.eta;
+    const last = rows[rows.length - 1], prev = rows[rows.length - 2];
+    const total = Number(cfg.epochs) || 0;
+    const ageSec = status.received ? Math.max(0, now - status.received) : 0;
+    const stale = ageSec > 240;
+    T.el.classList.toggle('stale', stale);
+
+    let frac = eta ? eta.fraction_complete : (total ? (rows.length + (cur && cur.iterations ? cur.iteration / cur.iterations : 0)) / total : 0);
+    // The deadline, not the epoch count, is what ends this run: show the
+    // nearer of the two so the bar does not promise an hour that is not coming.
+    let finish = eta && eta.finish ? new Date(eta.finish) : null;
+    let deadline = cfg.deadline && cfg.deadline !== 'None' ? new Date(cfg.deadline) : null;
+    if (deadline && (!finish || deadline < finish)) {
+      finish = deadline;
+      const startAt = status.run_started ? new Date(status.run_started) : null;
+      if (startAt) frac = Math.max(frac, Math.min(1, (Date.now() - startAt) / (deadline - startAt)));
+    }
+    frac = Math.min(1, Math.max(0, frac || 0));
+    T.pct.textContent = Math.round(frac * 100) + '%';
+    T.bar.style.width = (frac * 100).toFixed(1) + '%';
+
+    let brief;
+    if (!status.running && !rows.length) brief = status.message ? 'no run yet' : 'starting up';
+    else if (!status.running && rows.length) brief = `finished · best <b>${fmt(rows.filter(r => r.best).slice(-1)[0]?.val_psnr, 2)} dB</b>`;
+    else brief = `e<b>${cur ? cur.epoch : rows.length}</b>${total ? '/' + total : ''}` +
+                 (last && last.val_psnr != null ? ` · <b>${fmt(last.val_psnr, 2)} dB</b> · ${fmt(last.val_bpp, 2)} bpp` : '') +
+                 (finish ? ` · ~${hhmm(finish)}` : '');
+    if (stale) brief += ` · <b>last word ${hm(ageSec)} ago</b>`;
+    T.brief.innerHTML = brief;
+
+    const dv = (k) => (last && prev && last[k] != null && prev[k] != null) ? last[k] - prev[k] : null;
+    T.stats.innerHTML =
+      stat('val PSNR', fmt(last?.val_psnr, 2), 'dB', dv('val_psnr'), 'up') +
+      stat('val rate', fmt(last?.val_bpp, 3), 'bpp', dv('val_bpp'), 'down') +
+      stat('val loss', fmt(last?.val_loss, 3), '', dv('val_loss'), 'down') +
+      stat('epochs', `${rows.length}${total ? ' <small>/ ' + total + '</small>' : ''}`, '', null) +
+      stat('finishes', finish ? hhmm(finish) : '—', '', null) +
+      stat('per epoch', eta && eta.seconds_per_epoch ? hm(eta.seconds_per_epoch) : '—', '', null);
+    chart(rows);
+
+    if (cur && status.running) {
+      const f = cur.iterations ? cur.iteration / cur.iterations : 0;
+      T.step.innerHTML = `epoch ${cur.epoch} · step ${cur.iteration}/${cur.iterations} · ${fmt(cur.psnr, 2)} dB · ${fmt(cur.bpp, 3)} bpp (train, noise proxy)<i><b style="width:${(f * 100).toFixed(1)}%"></b></i>`;
+    } else T.step.innerHTML = '';
+
+    const bits = [];
+    if (cfg.lmbda) bits.push(`<b>lambda</b> ${cfg.lmbda}`);
+    if (cfg.hidden) bits.push(`<b>net</b> ${cfg.hidden}/${cfg.latent}`);
+    if (cfg.patch) bits.push(`<b>crop</b> ${cfg.patch}px`);
+    if (cfg.deadline && cfg.deadline !== 'None') bits.push(`<b>deadline</b> ${cfg.deadline.replace('T', ' ')}`);
+    if (status.generated) bits.push(`<b>as of</b> ${hhmm(status.generated)}`);
+    T.foot.innerHTML = bits.join('  ·  ') + (cfg._inferred ? `
+config ${cfg._inferred}` : '');
+  }
+
+  async function pollTrain() {
+    while (true) {
+      try {
+        const r = await fetch(`/api/training?key=${encodeURIComponent(key)}`, { cache: 'no-store' });
+        if (r.ok) { const d = await r.json(); renderTrain(d.status, d.now); }
+      } catch (_) {}
+      await new Promise(r => setTimeout(r, 30000));
+    }
+  }
+
+  function start() { scroll(true); poll(); pollTrain(); }
 
   if (key) {
     tryKey(key).then(ok => {
