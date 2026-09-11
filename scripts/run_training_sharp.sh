@@ -34,8 +34,12 @@ fi
 # ~22 images/s the GPU consumes, and the spawn-based worker pool wedges on this
 # machine. 2000 steps at ~1.35 steps/s is a ~25 minute epoch; the deadline, not
 # --epochs, decides when it ends, and the learning rate anneals to the deadline.
-echo "[$(date +%H:%M:%S)] training until $DEADLINE"
-.venv/bin/jsoncam train \
+# RESUME=1 picks the last epoch checkpoint back up after a crash or a reboot.
+RESUME_ARGS=""
+[ -n "${RESUME:-}" ] && [ -s "$OUT" ] && RESUME_ARGS="--resume $OUT"
+
+echo "[$(date +%H:%M:%S)] training until $DEADLINE $RESUME_ARGS"
+.venv/bin/jsoncam train $RESUME_ARGS \
     --image-cache data/images.npy --patch 256 --steps-per-epoch 2000 \
     --val-cache data/val_patches.npy \
     --out "$OUT" \

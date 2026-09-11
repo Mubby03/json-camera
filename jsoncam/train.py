@@ -165,13 +165,14 @@ def main(argv=None):
     base_lrs = [g["lr"] for g in opt.param_groups]
     ema = EMA(model, args.ema) if args.ema > 0 else None
 
+    resumed = None
     if args.resume and os.path.exists(args.resume):
-        ck = torch.load(args.resume, map_location=device, weights_only=False)
-        model.load_state_dict(ck["model"])
-        opt.load_state_dict(ck["opt"])
-        start_epoch = ck.get("epoch", 0)
-        if ema is not None and ck.get("ema"):
-            ema.model.load_state_dict(ck["ema"])
+        resumed = torch.load(args.resume, map_location=device, weights_only=False)
+        model.load_state_dict(resumed["model"])
+        opt.load_state_dict(resumed["opt"])
+        start_epoch = resumed.get("epoch", 0)
+        if ema is not None and resumed.get("ema"):
+            ema.model.load_state_dict(resumed["ema"])
         print(f"resumed from {args.resume} @ epoch {start_epoch}")
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -180,13 +181,18 @@ def main(argv=None):
     # Cosine schedule over whichever is further along: the step count or the
     # wall clock. With a deadline the run is guaranteed to have annealed by
     # the time it is cut off, instead of stopping at some high-LR midpoint.
-    total_steps = (args.epochs - start_epoch) * len(dl)
+    total_steps = args.epochs * len(dl)
     t_start = time.time()
+    step_global = 0
+    if resumed:
+        # Carry the clock and the step count across a restart, so the schedule
+        # picks up where it was instead of warming up again at full rate.
+        t_start = resumed.get("t_start", t_start)
+        step_global = resumed.get("step", start_epoch * len(dl))
     deadline = parse_deadline(args.deadline)
     if deadline:
         print(f"deadline: {time.strftime('%Y-%m-%d %H:%M', time.localtime(deadline))} "
               f"({(deadline - t_start)/3600:.1f}h from now)")
-    step_global = 0
 
     def set_lr():
         if step_global < args.warmup:
@@ -254,7 +260,8 @@ def main(argv=None):
 
         ck = {"model": model.state_dict(), "opt": opt.state_dict(), "epoch": epoch + 1,
               "ema": ema.model.state_dict() if ema is not None else None,
-              "config": model.config, "lmbda": args.lmbda, "metrics": metrics}
+              "config": model.config, "lmbda": args.lmbda, "metrics": metrics,
+              "t_start": t_start, "step": step_global}
         torch.save(ck, args.out)
         if select < best:
             best = select
