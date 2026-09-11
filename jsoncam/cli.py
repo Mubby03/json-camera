@@ -36,6 +36,14 @@ def cmd_prepare(args):
                       per_image=args.per_image, limit=args.limit)
 
 
+def cmd_prepare_images(args):
+    """Whole images at several scales, for crops cut fresh during training."""
+    from .data import build_image_cache
+
+    build_image_cache(args.images, args.out, patch=args.patch, limit=args.limit,
+                      workers=args.workers)
+
+
 def cmd_train(args, extra):
     from . import train
 
@@ -423,6 +431,15 @@ def build_parser():
     p.add_argument("--per-image", type=int, default=24)
     p.add_argument("--limit", type=int, default=None)
     p.set_defaults(fn=cmd_prepare)
+
+    p = sub.add_parser("prepare-images",
+                       help="store whole images at several scales; train crops them live")
+    p.add_argument("--images", required=True, nargs="+", help="one or more folders")
+    p.add_argument("--out", default="data/images.npy")
+    p.add_argument("--patch", type=int, default=256, help="drop renderings smaller than this")
+    p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--workers", type=int, default=None)
+    p.set_defaults(fn=cmd_prepare_images)
 
     p = sub.add_parser("train", help="train a model (see `jsoncam train --help`)")
     p.set_defaults(fn=None)
