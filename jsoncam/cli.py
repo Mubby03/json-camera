@@ -448,7 +448,7 @@ def build_parser():
                        help="encode a folder into latents, for compressed-domain training")
     p.add_argument("images")
     p.add_argument("--out", required=True, help="output .jcl shard")
-    p.add_argument("-c", "--checkpoint", default="checkpoints/stable/jc-final.pt")
+    p.add_argument("-c", "--checkpoint", default="checkpoints/stable/jc-sharp.pt")
     p.add_argument("--size", type=int, default=None,
                    help="resize to NxN first, as a training pipeline usually would")
     p.add_argument("--limit", type=int, default=None)
@@ -462,7 +462,7 @@ def build_parser():
     p = sub.add_parser("convert", help="encode a whole folder of images, resumably")
     p.add_argument("images", help="folder of photographs, or one file")
     p.add_argument("--out", required=True, help="where the .json files go")
-    p.add_argument("-c", "--checkpoint", default="checkpoints/stable/jc-final.pt")
+    p.add_argument("-c", "--checkpoint", default="checkpoints/stable/jc-sharp.pt")
     p.add_argument("--device", default="cpu", choices=["cpu", "mps", "cuda"])
     p.add_argument("--lossless", action="store_true", help="discard nothing; no checkpoint needed")
     p.add_argument("--max-side", type=int, default=None,
@@ -475,7 +475,7 @@ def build_parser():
     p = sub.add_parser("restore", help="decode a folder of .json back into pictures")
     p.add_argument("library", help="folder of .json files, or one file")
     p.add_argument("--out", required=True, help="where the pictures go")
-    p.add_argument("-c", "--checkpoint", default="checkpoints/stable/jc-final.pt")
+    p.add_argument("-c", "--checkpoint", default="checkpoints/stable/jc-sharp.pt")
     p.add_argument("--device", default="cpu", choices=["cpu", "mps", "cuda"])
     p.add_argument("--format", default="jpeg", choices=["jpeg", "png"],
                    help="jpeg carries the capture date and location back out; png does not")

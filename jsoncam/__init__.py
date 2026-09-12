@@ -39,7 +39,7 @@ __all__ = [
     "JSONCamera", "psnr", "ms_ssim", "__version__",
 ]
 
-DEFAULT_CHECKPOINT = "checkpoints/stable/jc-final.pt"
+DEFAULT_CHECKPOINT = "checkpoints/stable/jc-sharp.pt"
 
 
 def _as_image(src):
@@ -49,9 +49,25 @@ def _as_image(src):
 
 
 def bundled_models():
-    """Checkpoints shipped inside the package, smallest rate first."""
+    """Checkpoints shipped inside the package, by name.
+
+    Includes retired ones: `jc-final` and `jc-hq` are no longer offered for
+    encoding, but a file made with either still needs its weights to open, so
+    they ship for decoding. `decode` finds the right one by fingerprint.
+    """
     here = Path(__file__).resolve().parent / "models"
     return sorted(here.glob("*.pt")) if here.is_dir() else []
+
+
+def _bundled_for(fingerprint):
+    """The shipped checkpoint whose weights match a file, or None."""
+    from . import codec
+
+    for path in bundled_models():
+        model, _ = codec.load_checkpoint(path)
+        if codec.model_fingerprint(model) == fingerprint:
+            return model
+    return None
 
 
 def _resolve(checkpoint):
@@ -67,6 +83,11 @@ def _resolve(checkpoint):
         if Path(c).exists():
             return c
     shipped = bundled_models()
+    # The current model by name, so a retired one earlier in the alphabet is
+    # never picked up for encoding just because it is still on disk.
+    for path in shipped:
+        if path.name == Path(DEFAULT_CHECKPOINT).name:
+            return str(path)
     if shipped:
         return str(shipped[0])
     raise FileNotFoundError(
@@ -111,6 +132,11 @@ def decode(doc, out=None, checkpoint=None, device="cpu"):
         img = lossless.decode_dict(doc)
     else:
         model, _ = codec.load_checkpoint(_resolve(checkpoint))
+        wanted = (doc.get("model") or {}).get("fingerprint")
+        if checkpoint is None and wanted and codec.model_fingerprint(model) != wanted:
+            # Not the default's file. A retired model may still be able to
+            # open it; only give up when nothing shipped matches.
+            model = _bundled_for(wanted) or model
         img = codec.decode_dict(model, doc, device=device)
     if out:
         img.save(out, icc_profile=img.info.get("icc_profile"))

@@ -83,7 +83,7 @@ def main():
     cks = args.checkpoints or sorted(glob.glob(os.path.join(ROOT, "checkpoints", "stable", "*.pt")))
     if not cks:
         sys.exit("No checkpoints to ship. Train one, then:\n"
-                 "  jsoncam export checkpoints/jc.best.pt -o checkpoints/stable/jc-final.pt")
+                 "  jsoncam export checkpoints/jc.best.pt -o checkpoints/stable/jc-sharp.pt")
 
     stage = tempfile.mkdtemp(prefix="jsoncam-space-")
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc")

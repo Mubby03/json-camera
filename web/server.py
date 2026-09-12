@@ -156,7 +156,14 @@ app.add_middleware(
 # models
 
 
-def discover_models():
+def discover_models(include_retired=False):
+    """Checkpoints on disk, cheapest first.
+
+    A retired checkpoint (`retired: True` inside the file) is one nobody should
+    encode with any more, but whose files still exist and still need it to
+    open. It is left out of the picker and of the default, and offered only to
+    the decode paths that ask for it.
+    """
     found = []
     for path in sorted(MODEL_DIR.glob("*.pt")):
         if path.name.startswith("_"):
@@ -166,6 +173,8 @@ def discover_models():
         except Exception:
             continue
         if "model" not in ck or "config" not in ck:
+            continue
+        if ck.get("retired") and not include_retired:
             continue
         metrics = ck.get("metrics") or {}
         # Report the held-out bpp when the checkpoint carries one.  The training
@@ -180,6 +189,7 @@ def discover_models():
             "bpp": bpp,
             "psnr": psnr,
             "label": path.stem,
+            "retired": bool(ck.get("retired")),
         })
     found.sort(key=lambda m: (m["bpp"] or 0))
 
@@ -204,12 +214,36 @@ def discover_models():
 
 
 def load_model(model_id):
-    for meta in discover_models():
+    for meta in discover_models(include_retired=True):
         if meta["id"] == model_id:
             if meta["path"] not in _models:
                 _models[meta["path"]] = codec.load_checkpoint(meta["path"])[0]
             return _models[meta["path"]]
     raise HTTPException(404, f"no such model: {model_id}")
+
+
+def model_for(doc):
+    """The loaded checkpoint a lossy file was made with, retired or not.
+
+    Falls back to the default when nothing on disk matches, so the caller gets
+    the codec's own mismatch error rather than a silent wrong answer.
+    """
+    wanted = (doc.get("model") or {}).get("fingerprint")
+    for meta in discover_models(include_retired=True):
+        model = load_model(meta["id"])
+        if codec.model_fingerprint(model) == wanted:
+            return model
+    return load_model(default_model_id())
+
+
+def refuse_if_retired(model_id):
+    """Encoding with a retired checkpoint is a request to make files that the
+    picker no longer stands behind. Decoding them is still fine."""
+    for meta in discover_models(include_retired=True):
+        if meta["id"] == model_id and meta["retired"]:
+            raise HTTPException(410, (
+                f"{model_id} is retired: it still opens files it made, but new files "
+                f"are encoded with {default_model_id()}."))
 
 
 def default_model_id():
@@ -371,6 +405,7 @@ async def api_compress(
         return _compress_lossless(file, img, raw, stem, note)
 
     model_id = model_id or default_model_id()
+    refuse_if_retired(model_id)
     model = load_model(model_id)
 
     t0 = time.time()
@@ -511,7 +546,8 @@ async def api_decompress(file: UploadFile = File(...), model_id: str = Form(None
     chosen = model_id
     if not chosen:
         # Pick the checkpoint the file was actually made with, when we hold it.
-        for meta in discover_models():
+        # Retired ones count: opening old files is exactly what they are for.
+        for meta in discover_models(include_retired=True):
             if codec.model_fingerprint(load_model(meta["id"])) == wanted:
                 chosen = meta["id"]
                 break
@@ -677,7 +713,7 @@ def backfill_one_thumb():
         if doc.get("format") == lossless.FORMAT:
             img = lossless.decode_dict(doc)
         else:
-            img = codec.decode_dict(load_model(default_model_id()), doc, device="cpu")
+            img = codec.decode_dict(model_for(doc), doc, device="cpu")
         thumb, side = library.make_gallery_thumb(img)
         library.store_gallery_thumb(row["id"], thumb, side or library.GALLERY_THUMB)
     except Exception:
@@ -907,6 +943,8 @@ async def _store_one(lib, file, model_id, mode, gps):
         doc = lossless.encode_image(img.convert("RGB"), name=Path(file.filename or "photo").name,
                                     exif=False, gps=keep_gps)
     else:
+        if model_id:
+            refuse_if_retired(model_id)
         model = load_model(model_id or default_model_id())
         doc = codec.encode_image(model, img.convert("RGB"), device="cpu",
                                  name=Path(file.filename or "photo").name,
@@ -1232,14 +1270,8 @@ def api_library_photo(item_id: str, key: str = None, download: str = None,
     if doc.get("format") == lossless.FORMAT:
         img = lossless.decode_dict(doc)
     else:
-        wanted = (doc.get("model") or {}).get("fingerprint")
-        chosen = None
-        for meta_row in discover_models():
-            if codec.model_fingerprint(load_model(meta_row["id"])) == wanted:
-                chosen = meta_row["id"]
-                break
         try:
-            img = codec.decode_dict(load_model(chosen or default_model_id()), doc, device="cpu")
+            img = codec.decode_dict(model_for(doc), doc, device="cpu")
         except ValueError as error:
             raise HTTPException(409, str(error))
 
@@ -1337,8 +1369,7 @@ def api_library_zip(ids: str = None, key: str = None, view: str = None,
                     if doc.get("format") == lossless.FORMAT:
                         img = lossless.decode_dict(doc)
                     else:
-                        img = codec.decode_dict(load_model(default_model_id()), doc,
-                                                device="cpu")
+                        img = codec.decode_dict(model_for(doc), doc, device="cpu")
                 except Exception:
                     # One bad file must not truncate an archive of forty.
                     continue

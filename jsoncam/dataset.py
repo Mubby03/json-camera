@@ -115,7 +115,7 @@ class ShardWriter:
         return len(self.items)
 
 
-def prepare_dataset(images, out, checkpoint="checkpoints/stable/jc-final.pt",
+def prepare_dataset(images, out, checkpoint="checkpoints/stable/jc-sharp.pt",
                     size=None, labels=None, limit=None, progress=True):
     """Encode a folder of images into one shard of latents.
 
@@ -218,7 +218,7 @@ class LatentDataset(Dataset):
 
     @staticmethod
     def _guess_checkpoint():
-        for c in ("checkpoints/stable/jc-final.pt", "checkpoints/jc.best.pt"):
+        for c in ("checkpoints/stable/jc-sharp.pt", "checkpoints/jc.best.pt"):
             if Path(c).exists():
                 return c
         raise FileNotFoundError("pass checkpoint= explicitly")

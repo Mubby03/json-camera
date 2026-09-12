@@ -44,9 +44,9 @@ if [ -z "$PROJECT" ] || [ "$PROJECT" = "(unset)" ]; then
   exit 1
 fi
 
-if [ ! -f checkpoints/stable/jc-final.pt ]; then
-  echo "No checkpoint at checkpoints/stable/jc-final.pt."
-  echo "  .venv/bin/jsoncam export checkpoints/jc.best.pt -o checkpoints/stable/jc-final.pt"
+if [ ! -f checkpoints/stable/jc-sharp.pt ]; then
+  echo "No checkpoint at checkpoints/stable/jc-sharp.pt."
+  echo "  .venv/bin/jsoncam export checkpoints/jc.best.pt -o checkpoints/stable/jc-sharp.pt"
   exit 1
 fi
 

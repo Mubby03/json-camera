@@ -86,7 +86,7 @@ FastAPI or torchvision.
 ```python
 import jsoncam
 
-doc = jsoncam.encode("photo.jpg")            # learned codec, about 60x
+doc = jsoncam.encode("photo.jpg")            # learned codec, about 20x
 jsoncam.decode(doc, "restored.png")
 
 doc = jsoncam.encode_lossless("photo.png")   # nothing discarded, ~20% under PNG

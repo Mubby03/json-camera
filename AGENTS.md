@@ -27,7 +27,7 @@ A Python image codec with two modes, plus a way to train models on its output.
 ```python
 import jsoncam
 
-# --- lossy: learned codec, ~60x smaller than raw -------------------------
+# --- lossy: learned codec, ~20x smaller than raw -------------------------
 doc = jsoncam.encode("photo.jpg")            # -> dict (the container)
 doc = jsoncam.encode("photo.jpg", out="p.json")
 img = jsoncam.decode(doc)                    # -> PIL.Image
@@ -134,9 +134,9 @@ All measured, none estimated. Quote them with their conditions attached.
 
 | Claim | Value | Condition |
 |---|---|---|
-| Lossy vs JPEG | +2.21 dB PSNR, 12 of 12 wins | default model, ~0.31 bpp, JPEG size-matched per image |
+| Lossy vs JPEG | +2.21 dB PSNR, 12 of 12 wins | `jc-final` (retired), ~0.31 bpp, JPEG size-matched per image |
 | Lossy vs JPEG, sharp | +0.85 dB PSNR, 10 of 12 wins | `jc-sharp`, ~1.23 bpp, same 12 photographs. `jc-hq` at ~1.04 bpp **loses** by 1.12 dB |
-| Lossy compression | ~60x vs raw RGB | default model |
+| Lossy compression | ~20x vs raw RGB | `jc-sharp`; the retired `jc-final` was ~60x |
 | Lossless vs PNG | 20% smaller bitstream | photographs. **Loses on synthetic patterns** |
 | Lossless as a `.json` file | roughly level with PNG | the base85 armour costs 25%, cancelling the win |
 | Training throughput | 9.2x faster steps | 128x14x14 latents vs 3x224x224 pixels, same net |
@@ -149,7 +149,7 @@ Reproduce: `python scripts/benchmark.py` and `python scripts/benchmark_latents.p
 
 ## Behaviour that will surprise you
 
-- **Three lossy checkpoints ship:** `jc-final` (0.32 bpp, the default), `jc-hq` (1.04 bpp, superseded but kept so its files still open) and `jc-sharp` (1.23 bpp, the one to pick for quality).
+- **One lossy checkpoint is current, `jc-sharp` (1.23 bpp).** `jc-final` (0.32 bpp) and `jc-hq` (1.04 bpp) are **retired**: they ship with `retired: True` inside the file, `jsoncam.decode` and the web app still use them to open the files they made, and both refuse to encode with them. `jsoncam.encode` and every CLI default now mean `jc-sharp`.
 - **A file is only decodable by the checkpoint that wrote it.** Every file carries a fingerprint and decoding raises on a mismatch. Retraining invalidates old files and all `.jcl` shards.
 - **Lossy discards alpha.** The network has 3 input channels. The header records `image.alpha_discarded`. Lossless codes alpha as a fourth plane and keeps it.
 - **Silent conversions:** greyscale to RGB, CMYK to RGB, 16-bit to 8-bit.

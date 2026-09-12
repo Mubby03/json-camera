@@ -50,7 +50,7 @@ def throughput(model, x, steps=8):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--images", default="data/val_images")
-    ap.add_argument("-c", "--checkpoint", default="checkpoints/stable/jc-final.pt")
+    ap.add_argument("-c", "--checkpoint", default="checkpoints/stable/jc-sharp.pt")
     ap.add_argument("--size", type=int, default=224)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--limit", type=int, default=24)

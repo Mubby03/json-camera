@@ -32,7 +32,7 @@ def jpeg_at(img, target):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--images", default="data/val_images")
-    ap.add_argument("-c", "--checkpoint", default="checkpoints/stable/jc-final.pt")
+    ap.add_argument("-c", "--checkpoint", default="checkpoints/stable/jc-sharp.pt")
     ap.add_argument("--limit", type=int, default=16)
     ap.add_argument("--vs-json", action="store_true",
                     help="match JPEG to the .json size instead of the raw bitstream")

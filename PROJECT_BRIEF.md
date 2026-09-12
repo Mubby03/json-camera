@@ -48,9 +48,10 @@ a general-purpose compressor does well on the output; this one is scored on the
 bytes. `lambda` is the quality knob and the only difference between a small file
 and a large one.
 
-**Two models ship, at different points on the rate-distortion curve. Both were
-benchmarked on 12 held-out DIV2K photographs with JPEG size-matched per image via
-binary search.**
+**One model is offered for encoding, `jc-sharp`. Two earlier ones, `jc-final` and
+`jc-hq`, are retired: still in the package so the files they made keep opening,
+no longer in the picker. All three were benchmarked on 12 held-out DIV2K
+photographs with JPEG size-matched per image via binary search.**
 
 *Small model (lambda 0.0067), mean 0.31 bpp:*
 
@@ -67,7 +68,8 @@ JPEG's 33.92, so **−1.08 dB and only 2 wins of 12.** Learned codecs beat JPEG
 hardest at low bitrate, where JPEG collapses into blocks; around 1 bpp JPEG is
 in its comfort zone, and a 2M-parameter model trained for three hours on 800
 images did not keep up. Turning up quality made a better picture and a worse
-codec. That model still ships as `jc-hq`, because files encoded with it need it.
+codec. That model is retired but still ships as `jc-hq`, because files encoded
+with it need it to open.
 
 *Sharp model, retrained (`jc-sharp`, lambda 0.05), mean 1.23 bpp:*
 
@@ -309,8 +311,10 @@ Worth including in any post, because stating them is more credible than not.
   checkpoint reads it.
 - **JSON costs 25%.** Base85 carries ~6.1 bits per character. That is the price of
   the container being text, not a flaw in the codec. Both numbers are always shown.
-- **One quality level shipped so far.** Lambda picks one point on the
-  rate-distortion curve; the shipped model sits at the aggressive end.
+- **One quality level is offered.** Lambda picks one point on the
+  rate-distortion curve; `jc-sharp` sits at ~1.2 bpp, about a quarter of the
+  compression `jc-final` gave, in exchange for the picture. Anyone who wants the
+  aggressive point again trains it, or asks for `jc-final` to be un-retired.
 - **Encode/decode is CPU-bound**, ~1.3s/1.7s for 3 MP on one dedicated core. The
   demo caps uploads because of this, not because the codec cannot handle more.
 - **Lossless is capped at 10 MP on the server** (~150 MB working memory per
