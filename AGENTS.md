@@ -19,7 +19,7 @@ A Python image codec with two modes, plus a way to train models on its output.
 | Install | `pip install git+https://github.com/Mubby03/json-camera` |
 | Requires | `torch`, `numpy`, `pillow`. Python 3.10+ |
 | Network | **None.** No API, no key, no telemetry. Runs entirely locally. |
-| Models | Two checkpoints ship inside the package. Nothing to download. |
+| Models | Three checkpoints ship inside the package. Nothing to download. |
 | Import | `import jsoncam` |
 
 ## The whole API
@@ -135,6 +135,7 @@ All measured, none estimated. Quote them with their conditions attached.
 | Claim | Value | Condition |
 |---|---|---|
 | Lossy vs JPEG | +2.21 dB PSNR, 12 of 12 wins | default model, ~0.31 bpp, JPEG size-matched per image |
+| Lossy vs JPEG, sharp | +0.85 dB PSNR, 10 of 12 wins | `jc-sharp`, ~1.23 bpp, same 12 photographs. `jc-hq` at ~1.04 bpp **loses** by 1.12 dB |
 | Lossy compression | ~60x vs raw RGB | default model |
 | Lossless vs PNG | 20% smaller bitstream | photographs. **Loses on synthetic patterns** |
 | Lossless as a `.json` file | roughly level with PNG | the base85 armour costs 25%, cancelling the win |
@@ -148,6 +149,7 @@ Reproduce: `python scripts/benchmark.py` and `python scripts/benchmark_latents.p
 
 ## Behaviour that will surprise you
 
+- **Three lossy checkpoints ship:** `jc-final` (0.32 bpp, the default), `jc-hq` (1.04 bpp, superseded but kept so its files still open) and `jc-sharp` (1.23 bpp, the one to pick for quality).
 - **A file is only decodable by the checkpoint that wrote it.** Every file carries a fingerprint and decoding raises on a mismatch. Retraining invalidates old files and all `.jcl` shards.
 - **Lossy discards alpha.** The network has 3 input channels. The header records `image.alpha_discarded`. Lossless codes alpha as a fourth plane and keeps it.
 - **Silent conversions:** greyscale to RGB, CMYK to RGB, 16-bit to 8-bit.

@@ -62,15 +62,27 @@ binary search.**
 **Won 12 of 12 images on both metrics.** Range +0.10 to +3.69 dB — weakest on
 dense detail, strongest on smooth scenes.
 
-*Sharp model (lambda 0.05), mean 1.03 bpp:* 32.84 dB against JPEG's 33.92, so
-**−1.08 dB and only 2 wins of 12.** Absolute quality is 2.7 dB better than the
-small model (29.43 dB held-out against 26.76), but it loses the comparison.
+*Sharp model (lambda 0.05), first attempt, mean 1.03 bpp:* 32.84 dB against
+JPEG's 33.92, so **−1.08 dB and only 2 wins of 12.** Learned codecs beat JPEG
+hardest at low bitrate, where JPEG collapses into blocks; around 1 bpp JPEG is
+in its comfort zone, and a 2M-parameter model trained for three hours on 800
+images did not keep up. Turning up quality made a better picture and a worse
+codec. That model still ships as `jc-hq`, because files encoded with it need it.
 
-**This is the honest and more interesting result.** Learned codecs beat JPEG
-hardest at low bitrate, where JPEG collapses into blocks. Around 1 bpp JPEG is in
-its comfort zone, and a 2M-parameter model trained for three hours on 800 images
-does not keep up. Turning up quality made a better picture and a worse codec.
-Both ship, and the picker names the cost of each.
+*Sharp model, retrained (`jc-sharp`, lambda 0.05), mean 1.23 bpp:*
+
+| | json-camera | JPEG | delta |
+|---|---|---|---|
+| PSNR | 35.24 dB | 34.39 dB | **+0.85 dB** |
+| MS-SSIM | 19.25 dB | 18.91 dB | **+0.35 dB** |
+
+**Won 10 of 12 on PSNR, 9 of 12 on MS-SSIM**, and is 2.8 dB better than the
+first attempt at 18% more bytes. What changed: a 3.6M-parameter network
+(hidden 128 / latent 192), 3,450 photographs (DIV2K + Flickr2K) each stored at
+four scales down to ~720p with crops cut fresh every step, an EMA of the
+weights, and 13.6 hours on an M1 Pro against a wall-clock deadline instead of
+ten epochs. Held-out: 33.93 dB at 1.284 bpp. The lesson is the same one in
+reverse: at 1 bpp the architecture was never the problem, training was.
 
 Matched size is the load-bearing part of the methodology: JPEG quality is
 binary-searched to land on the same byte count, so neither codec gets a
@@ -267,19 +279,22 @@ container, so renaming the `.json` on disk does not lose it.
 
 ---
 
-## 7. In progress at time of writing
+## 7. The retrain, in numbers
 
-A higher-quality model is training (lambda 0.05 vs the original 0.0067), aimed at
-the "small file that looks identical" operating point. Epoch 2 of 10:
+The `jc-sharp` run (2026-09-12), validation on 1,600 held-out DIV2K patches:
 
-| epoch | val PSNR | val bpp |
-|---|---|---|
-| 1 | 23.05 dB | 0.866 |
-| 2 | 25.04 dB | 0.947 |
+| epoch | val PSNR | val bpp | | epoch | val PSNR | val bpp |
+|---|---|---|---|---|---|---|
+| 1 | 23.49 dB | 1.018 | | 15 | 33.40 dB | 1.308 |
+| 4 | 29.06 dB | 1.165 | | 20 | 33.69 dB | 1.291 |
+| 8 | 31.76 dB | 1.263 | | 25 | 33.86 dB | 1.287 |
+| 12 | 33.04 dB | 1.312 | | 30 | 33.93 dB | 1.284 |
 
-The v1 model finished at 26.76 dB at 0.346 bpp. This one is spending ~2.7x the
-bits. Target is 38-40 dB, which is where a side-by-side becomes
-indistinguishable. **That target is an estimate, not yet a measurement.**
+It passed the old `jc-hq` (29.43 dB after its ten epochs) during epoch 4. From
+epoch 14 the EMA weights beat the raw ones every time, and the deadline-driven
+cosine schedule reached its floor exactly as the clock ran out. The earlier
+38-40 dB target was a guess; 34 dB is the measurement, and the remaining gap is
+the factorised prior, not the training.
 
 ---
 

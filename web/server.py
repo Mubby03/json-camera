@@ -185,9 +185,9 @@ def discover_models():
 
     # Describe each model by what it actually does, not by its filename. With
     # more than one on the curve the honest framing is the trade between them:
-    # the cheapest genuinely beats JPEG at a matched size, the dearest looks
-    # better but no longer does. Saying only the flattering half would be a lie
-    # of omission on whichever model was left out.
+    # the cheapest beats JPEG at a matched size by the widest margin, the
+    # dearest gives the best picture for the most bytes. Anything in between
+    # (jc-hq, kept so its files still open) gets no claim at all.
     if len(found) > 1:
         found[0]["note"] = "smallest files, beats JPEG at matched size"
         found[-1]["note"] = "sharpest picture, larger files"
