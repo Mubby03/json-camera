@@ -8,6 +8,8 @@ NEW=checkpoints/stable/jc-sharp.pt
 
 echo "# Sharp run (lambda 0.05, hidden 128 / latent 192, multi-scale crops)"
 echo
+echo "waiting for training to start..."
+until pgrep -f 'jsoncam train' >/dev/null 2>&1; do sleep 60; done
 echo "waiting for training to finish..."
 while pgrep -f 'jsoncam train' >/dev/null 2>&1; do sleep 60; done
 echo "finished at $(date '+%Y-%m-%d %H:%M')"
