@@ -897,7 +897,9 @@ async def api_library_upload(
 
     if len(incoming) == 1 and results:
         return results[0]                 # the shape older Shortcuts expect
-    return {"uploaded": len(results), "failed": len(failures),
+    return {"uploaded": len([r for r in results if not r.get("duplicate")]),
+            "skipped": len([r for r in results if r.get("duplicate")]),
+            "failed": len(failures),
             "photos": results, "errors": failures,
             "library_items": library.usage(lib)["items"]}
 
@@ -915,6 +917,15 @@ async def _store_one(lib, file, model_id, mode, gps):
         raise HTTPException(400, "that file was empty")
     if len(raw) > MAX_UPLOAD:
         raise HTTPException(413, f"file is larger than {human(MAX_UPLOAD)}")
+    # Before decoding anything: a Shortcut that fires every time the camera
+    # closes sends the same recent photographs over and over, and the honest
+    # answer to "file this again" is the item it already is.
+    digest = library.source_hash(raw)
+    existing = library.find_by_source(lib, digest)
+    if existing:
+        return {"id": existing["id"], "duplicate": True,
+                "note": ("already in the library" if existing["deleted_at"] is None
+                         else "already in the library, in the trash")}
     try:
         img = Image.open(io.BytesIO(raw))
         img.load()
@@ -956,7 +967,7 @@ async def _store_one(lib, file, model_id, mode, gps):
     encode_seconds = time.time() - t0
 
     body = json.dumps(doc, separators=(",", ":")).encode("utf-8")
-    item_id = library.add(lib, doc, body, source_bytes=len(raw))
+    item_id = library.add(lib, doc, body, source_bytes=len(raw), source_digest=digest)
 
     # The gallery thumbnail, from the image already in hand. Doing it later
     # would mean decoding the photograph again for something we are holding.

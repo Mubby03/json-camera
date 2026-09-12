@@ -204,6 +204,11 @@ CREATE TABLE IF NOT EXISTS settings (
 # so this is the idiom: try each, ignore the one error that means "already there".
 MIGRATIONS = (
     "ALTER TABLE items ADD COLUMN favourite INTEGER DEFAULT 0",
+    # SHA-256 of the bytes that were uploaded, so an automation that sends the
+    # same photograph twice files it once. Older rows have none and are never
+    # matched, which only means they can be duplicated the old way.
+    "ALTER TABLE items ADD COLUMN source_hash TEXT",
+    "CREATE INDEX IF NOT EXISTS items_source_hash ON items (library, source_hash)",
     "ALTER TABLE items ADD COLUMN deleted_at REAL",
     "ALTER TABLE items ADD COLUMN place TEXT",
     # 0 means "resolved under an older wording", which is also what every row
@@ -1331,7 +1336,24 @@ def usage(lib):
             "max_items": MAX_ITEMS, "max_bytes": MAX_BYTES}
 
 
-def add(lib, doc, raw_json, source_bytes=None):
+def source_hash(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def find_by_source(lib, digest):
+    """The item already filed from these exact bytes, or None.
+
+    Trashed items count: a photograph somebody deleted and an automation then
+    re-sends should stay deleted, not come back through the side door.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id, deleted_at FROM items WHERE library = ? AND source_hash = ? "
+            "ORDER BY stored_at DESC LIMIT 1", (lib, digest)).fetchone()
+    return dict(row) if row else None
+
+
+def add(lib, doc, raw_json, source_bytes=None, source_digest=None):
     """Store one encoded photograph and index what the gallery needs to sort it.
 
     `raw_json` is the serialised container exactly as it will be served back, so
@@ -1366,6 +1388,7 @@ def add(lib, doc, raw_json, source_bytes=None):
         "height": image.get("height"),
         "json_bytes": len(raw_json),
         "source_bytes": source_bytes,
+        "source_hash": source_digest,
         "lossless": 1 if doc.get("format", "").startswith("json-camera/lossless") else 0,
         "camera": info.get("camera"),
         "lens": info.get("lens"),
